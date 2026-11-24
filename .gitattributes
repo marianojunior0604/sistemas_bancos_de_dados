@@ -1,0 +1,14 @@
+# Texto: o Git guarda com LF e entrega com o padrão do sistema
+* text=auto
+
+# Scripts do Windows sempre com CRLF (o PowerShell e o Inno Setup esperam assim)
+*.ps1 text eol=crlf
+*.iss text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binários: nunca mexer
+*.png binary
+*.ico binary
+*.bmp binary
+*.jar binary

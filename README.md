@@ -455,10 +455,49 @@ O build copia os três drivers H2 para `target/drivers` (plugin `maven-dependenc
 ### PowerShell
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\empacotar.ps1 -SoJar        # dist\h2studio\h2studio.jar + drivers\
-.\empacotar.ps1               # dist\H2 Studio\H2 Studio.exe (com JRE embutido, via jpackage)
+.\empacotar.ps1                 # programa + instalador (dist\instalador\H2Studio-<versão>-instalador.exe)
+.\empacotar.ps1 -SemInstalador  # só dist\H2 Studio\H2 Studio.exe (com Java embutido, roda sem instalar)
+.\empacotar.ps1 -SoJar          # dist\h2studio\h2studio.jar + drivers\
 ```
 O script localiza sozinho o JDK 21 e o Maven do NetBeans quando o `mvn` não está no PATH.
+
+## Instalador (versão 1.8)
+
+Pré-requisito, uma vez só: **Inno Setup 6.3 ou mais novo** (grátis) —
+`winget install JRSoftware.InnoSetup`. Depois, `.\empacotar.ps1` gera tudo:
+
+1. compila com o Maven (`target\h2studio.jar` + drivers H2);
+2. o **jpackage** monta `dist\H2 Studio` com o `H2 Studio.exe` e um Java 21 enxuto embutido
+   (só os módulos que o programa e os drivers usam, levantados com `jdeps`: ~60 MB em vez de ~290 MB
+   do JDK inteiro; inclui datas/números em português, charsets antigos como DOS850 do Firebird e
+   criptografia para conexões com SSL);
+3. o **Inno Setup** (`instalador\h2studio.iss`) gera `dist\instalador\H2Studio-<versão>-instalador.exe`.
+
+A versão vem do `<version>` do `pom.xml` (é ela que vai no instalador, no "Sobre" e no Painel de
+Controle). Para lançar uma versão nova: mude a versão no `pom.xml` e no `MainWindow.VERSION`,
+rode o script e distribua o `.exe`.
+
+O que o instalador faz:
+
+- Em português, com a opção **"Para todos os usuários"** (pede administrador, vai para Arquivos de
+  Programas) ou **"Só para mim"** (sem administrador, vai para `%LOCALAPPDATA%\Programs`) — útil
+  em computador de cliente onde o usuário não é administrador.
+- Atalho no menu Iniciar e, se marcado, na área de trabalho; opção de abrir o programa no fim.
+- **Atualização:** rodar o instalador de uma versão nova por cima atualiza no mesmo lugar (o `AppId`
+  não muda), fecha o H2 Studio se estiver aberto e troca o Java e os jars antigos. As conexões,
+  o histórico e os backups (`%USERPROFILE%\.h2studio`) ficam intactos.
+- **"Abrir com > H2 Studio"** para `.db` (os bancos H2 `banco.mv.db` são `.db` para o Windows), `.sqlite`
+  e `.sqlite3`, sem tirar o programa padrão de ninguém; opcionalmente, dois cliques em `.sqlite`
+  abrem direto no H2 Studio.
+- **Uma janela só:** com o H2 Studio já aberto, abrir outro banco pelo Explorer abre na janela que
+  já está aberta (a segunda execução entrega o arquivo e fecha). Para forçar outra janela:
+  `-Dh2studio.novaJanela=true`.
+- **Desinstalar** (Configurações › Aplicativos): remove o programa e pergunta — com "Não" como
+  padrão — se apaga também a pasta `.h2studio` do usuário (conexões, drivers baixados e backups).
+
+O instalador não é assinado digitalmente: na primeira vez o Windows SmartScreen mostra "O Windows
+protegeu o computador" → *Mais informações* → *Executar assim mesmo*. Para tirar o aviso é preciso
+um certificado de assinatura de código (assinar com `signtool` depois do Inno Setup).
 
 ## Onde ficam as coisas
 

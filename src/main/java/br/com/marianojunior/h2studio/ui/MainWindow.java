@@ -53,7 +53,7 @@ import javafx.stage.Stage;
 public class MainWindow {
 
     public static final String CSS = MainWindow.class.getResource("app.css").toExternalForm();
-    public static final String VERSION = "1.7.0";
+    public static final String VERSION = "1.8.0";
 
     private final Stage stage;
     private final HostServices hostServices;

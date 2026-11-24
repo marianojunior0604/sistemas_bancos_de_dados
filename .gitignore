@@ -1,7 +1,49 @@
+# ==========================================================
+#  H2 Studio - só o código-fonte vai para o GitHub
+#  (src, instalador, pom.xml, empacotar.ps1, nbactions.xml, README)
+# ==========================================================
+
+# ---------- gerado pelo build ----------
 target/
 dist/
+*.class
+*.jar
+*.exe
+*.msi
+
+# ---------- NetBeans / outras IDEs ----------
 nb-configuration.xml
+nbproject/private/
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# ---------- bancos de teste e backups (podem ter dados de clientes!) ----------
 *.mv.db
 *.trace.db
 *.lock.db
 *.h2.db
+*.sqlite
+*.sqlite3
+*.fdb
+*.gdb
+*.fbk
+*.bak
+*.backup
+*.sql.gz
+.h2studio/
+
+# ---------- Java / logs ----------
+hs_err_pid*.log
+replay_pid*.log
+*.log
+
+# ---------- Windows / macOS ----------
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.DS_Store
