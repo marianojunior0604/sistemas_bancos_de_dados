@@ -53,7 +53,7 @@ import javafx.stage.Stage;
 public class MainWindow {
 
     public static final String CSS = MainWindow.class.getResource("app.css").toExternalForm();
-    public static final String VERSION = "1.5.0";
+    public static final String VERSION = "1.6.0";
 
     private final Stage stage;
     private final HostServices hostServices;
@@ -100,7 +100,13 @@ public class MainWindow {
 
         tree.setOnOpenTable(t -> openTable(t.session(), t.table()));
         tree.setOnNewQuery(s -> openSqlEditor(s, null, false));
-        tree.setOnNewTable((s, schema) -> openDesigner(s, schema, null));
+        tree.setOnNewTable((s, schema) -> {
+            String sch = schema;
+            if (sch == null) {
+                sch = currentSchemaOf(s);
+            }
+            openDesigner(s, sch == null ? "" : sch, null);
+        });
         tree.setOnAlterTable(t -> openDesigner(t.session(), t.table().schema(), t.table().name()));
         tree.setOnDropTable(t -> dropTable(t.session(), t.table()));
         tree.setOnFlyway(s -> new FlywayDialog(stage, s).showAndWait());
@@ -279,10 +285,13 @@ public class MainWindow {
         });
         MenuItem newTable = new MenuItem("Nova tabela…");
         newTable.setOnAction(e -> {
-            DbSession s = sessionForTools();
-            if (s != null) {
+            DbSession s = sessionForAnyDb();
+            if (s != null && s.isH2()) {
                 openDesigner(s, br.com.marianojunior.h2studio.core.SqlCompletion.casingOf(s.config())
                         == br.com.marianojunior.h2studio.core.SqlCompletion.Casing.LOWER ? "public" : "PUBLIC", null);
+            } else if (s != null) {
+                String sch = currentSchemaOf(s);
+                openDesigner(s, sch == null ? "" : sch, null);
             }
         });
         MenuItem sqlHistory = new MenuItem("Histórico de SQL…");
@@ -781,7 +790,8 @@ public class MainWindow {
     private void dropTable(DbSession s, br.com.marianojunior.h2studio.core.Meta.TableInfo t) {
         Fx.then(s.submit(c -> {
             long rows;
-            try (var st = c.createStatement(); var rs = st.executeQuery("SELECT COUNT(*) FROM " + t.qualified())) {
+            String from = s.isH2() ? t.qualified() : s.type().qualified(t.schema(), t.name());
+            try (var st = c.createStatement(); var rs = st.executeQuery("SELECT COUNT(*) FROM " + from)) {
                 rs.next();
                 rows = rs.getLong(1);
             }
@@ -803,17 +813,18 @@ public class MainWindow {
         Alert a = new Alert(Alert.AlertType.WARNING, "", del, Fx.CANCEL);
         a.initOwner(stage);
         a.setTitle("H2 Studio");
-        a.setHeaderText("Excluir a tabela " + t.schema() + "." + t.name() + "?");
+        a.setHeaderText("Excluir a tabela " + (t.schema().isEmpty() ? "" : t.schema() + ".") + t.name() + "?");
         VBox box = new VBox(8);
         box.getChildren().add(Fx.wrapLabel(String.format("%,d", rows).replace(',', '.') + " linha(s) serão apagadas "
                 + "definitivamente, junto com índices e chaves da tabela."
-                + (br.com.marianojunior.h2studio.core.AppPreferences.autoBackup() ? " Um backup do banco será feito antes." : "")));
+                + (!s.isH2() ? " Não há backup automático neste banco: se precisar, faça antes em Backup e restauração."
+                : br.com.marianojunior.h2studio.core.AppPreferences.autoBackup() ? " Um backup do banco será feito antes." : "")));
         javafx.scene.control.CheckBox cascade = new javafx.scene.control.CheckBox(
                 "Remover também as chaves estrangeiras de outras tabelas que apontam para ela (CASCADE)");
         if (!incoming.isEmpty()) {
             StringBuilder sb = new StringBuilder("Outras tabelas dependem dela:\n");
             for (var f : incoming) {
-                sb.append("• ").append(f.refSchema()).append('.').append(f.refTable()).append(" (").append(f.refColumns())
+                sb.append("• ").append(f.refSchema() == null || f.refSchema().isEmpty() ? "" : f.refSchema() + ".").append(f.refTable()).append(" (").append(f.refColumns())
                         .append(") — chave ").append(f.name()).append('\n');
             }
             Label dep = Fx.wrapLabel(sb.toString().trim());
@@ -836,20 +847,43 @@ public class MainWindow {
             return;
         }
         var casing = br.com.marianojunior.h2studio.core.SqlCompletion.casingOf(s.config());
-        String def = casing == br.com.marianojunior.h2studio.core.SqlCompletion.Casing.LOWER ? "public" : "PUBLIC";
-        String sql = br.com.marianojunior.h2studio.core.DdlBuilder.dropTable(t.schema(), t.name(), cascade.isSelected(), casing, def);
+        String def = !s.isH2() ? currentSchemaOf(s)
+                : casing == br.com.marianojunior.h2studio.core.SqlCompletion.Casing.LOWER ? "public" : "PUBLIC";
+        List<String> stmts = br.com.marianojunior.h2studio.core.DdlBuilder.dropTableStatements(s.type(), t.schema(), t.name(),
+                cascade.isSelected(), incoming, casing, def);
         setStatus("Excluindo " + t.name() + "…", true);
         Fx.then(s.submit(c -> {
             String backup = null;
-            if (br.com.marianojunior.h2studio.core.AppPreferences.autoBackup()) {
+            if (s.isH2() && br.com.marianojunior.h2studio.core.AppPreferences.autoBackup()) {
                 backup = br.com.marianojunior.h2studio.core.BackupService.backup(c, s.config(),
                         br.com.marianojunior.h2studio.core.AppPreferences.backupsToKeep()).getFileName().toString();
                 s.setBackedUp(true);
             }
-            try (var st = c.createStatement()) {
-                st.execute(sql);
+            boolean tx = stmts.size() > 1 && br.com.marianojunior.h2studio.core.DdlBuilder.transactionalDdl(s.type());
+            boolean auto = c.getAutoCommit();
+            if (tx) {
+                c.setAutoCommit(false);
             }
-            br.com.marianojunior.h2studio.core.SqlHistory.forDatabase(s.config()).add(sql, true, "excluir tabela");
+            try (var st = c.createStatement()) {
+                for (String sql : stmts) {
+                    st.execute(sql);
+                }
+                if (tx) {
+                    c.commit();
+                }
+            } catch (java.sql.SQLException ex) {
+                if (tx) {
+                    c.rollback();
+                }
+                throw ex;
+            } finally {
+                if (tx) {
+                    c.setAutoCommit(auto);
+                }
+            }
+            for (String sql : stmts) {
+                br.com.marianojunior.h2studio.core.SqlHistory.forDatabase(s.config()).add(sql, true, "excluir tabela");
+            }
             return backup;
         }), backup -> {
             structureChanged(s, t.schema(), t.name(), null);
@@ -857,7 +891,7 @@ public class MainWindow {
         }, e -> {
             setStatus("Não foi possível excluir " + t.name() + ".", false);
             Fx.error(stage, "Não foi possível excluir a tabela", e instanceof java.sql.SQLException se
-                    ? br.com.marianojunior.h2studio.core.SqlErrors.friendly(se) : Fx.shortMessage(e), e);
+                    ? br.com.marianojunior.h2studio.core.SqlErrors.friendly(se, s.type()) : Fx.shortMessage(e), e);
         });
     }
 
@@ -1286,8 +1320,8 @@ public class MainWindow {
             Fx.info(stage, "Disponível só para H2 por enquanto",
                     s.displayName() + " é " + s.type().label() + ". Nesta versão os outros bancos podem ser "
                     + "conectados, navegados (estrutura, índices, chaves e DDL), consultados e editados na grade, "
-                    + "usados no editor SQL, exportados para Excel/CSV e ter backup e restauração. As demais "
-                    + "ferramentas para eles chegam nas próximas partes.");
+                    + "usados no editor SQL, exportados para Excel/CSV, ter a estrutura alterada no designer e ter "
+                    + "backup e restauração. As demais ferramentas para eles chegam nas próximas partes.");
             return null;
         }
         return s;

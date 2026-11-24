@@ -60,7 +60,7 @@ if (Test-Path $imagem) { Remove-Item $imagem -Recurse -Force }
 & (Join-Path $jdk "bin\jpackage.exe") `
     --type app-image `
     --name "H2 Studio" `
-    --app-version "1.5.0" `
+    --app-version "1.6.0" `
     --vendor "Mariano Junior" `
     --input $app `
     --main-jar h2studio.jar `

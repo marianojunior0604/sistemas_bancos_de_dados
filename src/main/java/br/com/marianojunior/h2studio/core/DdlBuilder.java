@@ -21,6 +21,10 @@ import java.util.Set;
  * chaves estrangeiras → comentários.
  * <p>
  * Atenção: no H2 cada comando de estrutura é gravado na hora (não há rollback entre eles).
+ * <p>
+ * A partir da versão 1.6 gera também para PostgreSQL, MySQL/MariaDB, Firebird, SQL Server e
+ * SQLite, cada um com a sua sintaxe (auto incremento, renomear, mudar tipo, comentários). No
+ * SQLite, mudanças que o ALTER TABLE não suporta recriam a tabela copiando os dados.
  */
 public final class DdlBuilder {
 
@@ -34,9 +38,38 @@ public final class DdlBuilder {
         public String script() {
             return String.join(";\n\n", statements) + (statements.isEmpty() ? "" : ";\n");
         }
+
+        /** Script no padrão do banco (Firebird: gatilhos entre SET TERM, como no isql/IBExpert). */
+        public String script(DbType type) {
+            if (type == DbType.SQLSERVER && !statements.isEmpty()) {
+                return String.join("\nGO\n\n", statements) + "\nGO\n";
+            }
+            if (type == null || !type.isFirebird() || statements.stream().noneMatch(DdlBuilder::isBlock)) {
+                return script();
+            }
+            StringBuilder sb = new StringBuilder();
+            for (String st : statements) {
+                if (isBlock(st)) {
+                    sb.append("SET TERM ^ ;\n\n").append(st).append("^\n\nSET TERM ; ^\n\n");
+                } else {
+                    sb.append(st).append(";\n\n");
+                }
+            }
+            return sb.toString().stripTrailing() + "\n";
+        }
+    }
+
+    static boolean isBlock(String st) {
+        return st.startsWith("CREATE TRIGGER") || st.startsWith("CREATE OR ALTER TRIGGER");
+    }
+
+    /** O banco desfaz CREATE/ALTER numa transação (então dá para aplicar tudo ou nada). */
+    public static boolean transactionalDdl(DbType type) {
+        return type == DbType.POSTGRESQL || type == DbType.SQLSERVER || type == DbType.SQLITE;
     }
 
     private final TableDesign d;
+    private final DbType type;
     private final SqlCompletion.Casing casing;
     private final String defaultSchema;
     private final Set<String> existingTables;
@@ -44,8 +77,10 @@ public final class DdlBuilder {
     private final List<String> errors = new ArrayList<>();
     private final List<String> warnings = new ArrayList<>();
 
-    private DdlBuilder(TableDesign d, SqlCompletion.Casing casing, String defaultSchema, Set<String> existingTables) {
+    private DdlBuilder(TableDesign d, SqlCompletion.Casing casing, String defaultSchema, Set<String> existingTables,
+                       DbType type) {
         this.d = d;
+        this.type = type == null ? DbType.H2 : type;
         this.casing = casing;
         this.defaultSchema = defaultSchema;
         this.existingTables = existingTables;
@@ -55,13 +90,23 @@ public final class DdlBuilder {
      * @param existingTables nomes das tabelas já existentes no schema (para avisar nome repetido)
      */
     public static Plan build(TableDesign d, SqlCompletion.Casing casing, String defaultSchema, Set<String> existingTables) {
-        DdlBuilder b = new DdlBuilder(d, casing, defaultSchema, existingTables == null ? Set.of() : existingTables);
+        return build(d, casing, defaultSchema, existingTables, DbType.H2);
+    }
+
+    /** Idem para o banco informado. */
+    public static Plan build(TableDesign d, SqlCompletion.Casing casing, String defaultSchema, Set<String> existingTables,
+                             DbType type) {
+        DdlBuilder b = new DdlBuilder(d, casing, defaultSchema, existingTables == null ? Set.of() : existingTables, type);
         b.validate();
         if (b.errors.isEmpty()) {
             if (d.isNew()) {
                 b.buildCreate();
-            } else {
+            } else if (b.type == DbType.SQLITE && b.sqliteNeedsRebuild()) {
+                b.buildSqliteRebuild();
+            } else if (b.type == DbType.H2) {
                 b.buildAlter();
+            } else {
+                b.buildAlterOther();
             }
         }
         return new Plan(List.copyOf(b.sql), List.copyOf(b.errors), List.copyOf(b.warnings));
@@ -85,17 +130,28 @@ public final class DdlBuilder {
     }
 
     private String id(String name) {
-        return SqlCompletion.quoteIfNeeded(name, casing);
+        return SqlCompletion.quoteIfNeeded(name, casing, type);
     }
 
     private String table(String name) {
-        boolean def = d.schema == null || d.schema.equals(defaultSchema);
+        boolean def = d.schema == null || d.schema.isEmpty() || d.schema.equals(defaultSchema);
         return def ? id(name) : id(d.schema) + "." + id(name);
     }
 
     private String tableRef(String schema, String name) {
-        boolean def = schema == null || schema.equals(defaultSchema);
+        boolean def = schema == null || schema.isEmpty() || schema.equals(defaultSchema);
         return def ? id(name) : id(schema) + "." + id(name);
+    }
+
+    /** Nome de objeto do Firebird 2.5 (no máximo 31 caracteres). */
+    private String fbName(String n) {
+        String u = n.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9_$]", "_");
+        return u.length() > 31 ? u.substring(0, 31) : u;
+    }
+
+    private String pkConstraintName(String tableName) {
+        String n = normalizeName("pk_" + tableName, casing);
+        return type.isFirebird() ? fbName(n) : n;
     }
 
     private String qualifiedIndex(String name) {
@@ -132,7 +188,25 @@ public final class DdlBuilder {
         return t;
     }
 
+    /** Tipo com tamanho, usando a lista de tipos do banco. */
+    public static String typeSql(Column c, DbType type) {
+        if (type == null || type == DbType.H2) {
+            return typeSql(c);
+        }
+        String t = c.type == null ? "" : c.type.trim().toUpperCase(Locale.ROOT);
+        TableDesign.TypeInfo ti = TableDesign.typeInfo(t, type);
+        boolean len = ti == null ? c.length != null && !t.contains("(") : ti.hasLength();
+        boolean sc = ti == null ? c.scale != null : ti.hasScale();
+        if (len && c.length != null) {
+            return t + "(" + c.length + (sc && c.scale != null ? ", " + c.scale : "") + ")";
+        }
+        return t;
+    }
+
     private String columnDef(Column c) {
+        if (type != DbType.H2) {
+            return columnDefOther(c, false);
+        }
         StringBuilder sb = new StringBuilder(id(c.name)).append(' ').append(typeSql(c));
         if (c.identity) {
             sb.append(" GENERATED BY DEFAULT AS IDENTITY");
@@ -167,8 +241,49 @@ public final class DdlBuilder {
         return lenOk && ts >= fs && intDigitsOk;
     }
 
-    private static boolean sameType(Column a, Column b) {
-        return typeSql(a).replaceAll("\\s+", " ").equalsIgnoreCase(typeSql(b).replaceAll("\\s+", " "));
+    /**
+     * Definição de coluna nos outros bancos. {@code inlinePk}: SQLite com auto incremento
+     * (INTEGER PRIMARY KEY AUTOINCREMENT fica na própria coluna).
+     */
+    private String columnDefOther(Column c, boolean forAlterMysql) {
+        StringBuilder sb = new StringBuilder(id(c.name)).append(' ').append(typeSql(c, type));
+        boolean notNull = !c.nullable || c.primaryKey;
+        String def = norm(c.defaultExpr);
+        if (c.identity) {
+            switch (type) {
+                case POSTGRESQL, FIREBIRD -> {
+                    sb.append(" GENERATED BY DEFAULT AS IDENTITY");
+                    notNull = false; // identidade já é obrigatória
+                }
+                case SQLSERVER -> sb.append(" IDENTITY(1,1)");
+                case SQLITE -> {
+                    sb.append(" PRIMARY KEY AUTOINCREMENT");
+                    notNull = false;
+                }
+                default -> { } // MySQL: AUTO_INCREMENT depois do NOT NULL; Firebird 2.5: gatilho
+            }
+            def = null;
+        }
+        if (def != null) {
+            sb.append(" DEFAULT ").append(def);
+        }
+        if (notNull) {
+            sb.append(" NOT NULL");
+        }
+        if (c.identity && (type == DbType.MYSQL || type == DbType.MARIADB)) {
+            sb.append(" AUTO_INCREMENT");
+        }
+        if ((type == DbType.MYSQL || type == DbType.MARIADB) && norm(c.comment) != null) {
+            sb.append(" COMMENT ").append(lit(c.comment.trim()));
+        }
+        return sb.toString();
+    }
+
+    private boolean sameType(Column a, Column b) {
+        if (type == DbType.H2) {
+            return typeSql(a).replaceAll("\\s+", " ").equalsIgnoreCase(typeSql(b).replaceAll("\\s+", " "));
+        }
+        return typeSql(a, type).replaceAll("\\s+", " ").equalsIgnoreCase(typeSql(b, type).replaceAll("\\s+", " "));
     }
 
     private static String norm(String s) {
@@ -180,6 +295,11 @@ public final class DdlBuilder {
     // =====================================================================
 
     private void validate() {
+        validateBase();
+        validateDialect();
+    }
+
+    private void validateBase() {
         String tn = normalizeName(d.name, casing);
         if (tn.isEmpty()) {
             errors.add("Informe o nome da tabela.");
@@ -277,9 +397,65 @@ public final class DdlBuilder {
         }
     }
 
+    /** Regras que dependem do banco. */
+    private void validateDialect() {
+        if (type == DbType.H2) {
+            return;
+        }
+        String tn = normalizeName(d.name, casing);
+        boolean renamed = !d.isNew() && !tn.equals(d.originalName) && !d.name.trim().equals(d.originalName);
+        if (renamed && type.isFirebird()) {
+            errors.add("O Firebird não permite renomear tabelas. Crie uma tabela nova e copie os dados pelo editor SQL.");
+        }
+        if (type == DbType.FIREBIRD_25) {
+            for (String n : allNames()) {
+                if (n.length() > 31) {
+                    errors.add("No Firebird 2.5 os nomes têm no máximo 31 caracteres: " + n + ".");
+                }
+            }
+        }
+        long pkCount = d.activeColumns().stream().filter(c -> c.primaryKey).count();
+        for (Column c : d.activeColumns()) {
+            String n = currentName(c);
+            if (c.identity && type == DbType.SQLITE && (!c.primaryKey || pkCount != 1
+                    || !"INTEGER".equalsIgnoreCase(c.type == null ? "" : c.type.trim()))) {
+                errors.add("No SQLite o auto incremento só existe em INTEGER chave primária sozinha (coluna " + n + ").");
+            }
+            if (c.identity && (type == DbType.MYSQL || type == DbType.MARIADB) && !c.primaryKey) {
+                errors.add("No MySQL o auto incremento precisa ser a chave primária (coluna " + n + ").");
+            }
+            if (!c.isNew() && type == DbType.FIREBIRD_25) {
+                boolean wantNotNull = !c.nullable || c.primaryKey;
+                boolean hadNotNull = !c.original.nullable || c.original.primaryKey;
+                if (wantNotNull != hadNotNull) {
+                    errors.add("O Firebird 2.5 não muda a obrigatoriedade de uma coluna existente (" + n
+                            + "). Crie uma coluna nova ou atualize para o Firebird 3.");
+                }
+            }
+        }
+        boolean anyComment = norm(d.comment) != null || d.activeColumns().stream().anyMatch(c -> norm(c.comment) != null);
+        boolean commentChanged = !Objects.equals(norm(d.comment), norm(d.originalComment))
+                || d.activeColumns().stream().anyMatch(c -> !Objects.equals(norm(c.comment),
+                c.isNew() ? null : norm(c.original.comment)));
+        if ((type == DbType.SQLSERVER || type == DbType.SQLITE) && anyComment && commentChanged) {
+            warnings.add("Comentários não são gravados no " + type.shortLabel()
+                    + (type == DbType.SQLSERVER ? " por aqui (use as propriedades estendidas no SSMS)." : " (o banco não tem comentários)."));
+        }
+    }
+
+    private List<String> allNames() {
+        List<String> out = new ArrayList<>();
+        out.add(normalizeName(d.name, casing));
+        d.activeColumns().forEach(c -> out.add(currentName(c)));
+        d.indexes.stream().filter(i -> !i.dropped && !i.automatic).forEach(i -> out.add(normalizeName(i.name, casing)));
+        d.foreignKeys.stream().filter(f -> !f.dropped).forEach(f -> out.add(normalizeName(f.name, casing)));
+        return out;
+    }
+
     private static boolean isIntegerType(Column c) {
         String t = c.type == null ? "" : c.type.trim().toUpperCase(Locale.ROOT);
-        return t.equals("INTEGER") || t.equals("BIGINT") || t.equals("SMALLINT") || t.equals("TINYINT") || t.equals("INT");
+        return t.equals("INTEGER") || t.equals("BIGINT") || t.equals("SMALLINT") || t.equals("TINYINT") || t.equals("INT")
+                || t.equals("MEDIUMINT");
     }
 
     /** Nome que a coluna terá depois das alterações. */
@@ -304,10 +480,16 @@ public final class DdlBuilder {
             lines.add(columnDef(x));
         }
         List<String> pk = cols.stream().filter(c -> c.primaryKey).map(this::currentName).toList();
-        if (!pk.isEmpty()) {
-            lines.add("PRIMARY KEY (" + String.join(", ", pk.stream().map(this::id).toList()) + ")");
-        } else {
-            warnings.add("A tabela não tem chave primária: o sistema e o H2 Studio vão identificar as linhas pelo _ROWID_.");
+        boolean inlinePk = type == DbType.SQLITE && cols.stream().anyMatch(c -> c.identity);
+        if (!pk.isEmpty() && !inlinePk) {
+            String cols2 = String.join(", ", pk.stream().map(this::id).toList());
+            lines.add(type == DbType.SQLSERVER || type.isFirebird()
+                    ? "CONSTRAINT " + id(pkConstraintName(tn)) + " PRIMARY KEY (" + cols2 + ")"
+                    : "PRIMARY KEY (" + cols2 + ")");
+        } else if (pk.isEmpty()) {
+            warnings.add(type == DbType.H2
+                    ? "A tabela não tem chave primária: o sistema e o H2 Studio vão identificar as linhas pelo _ROWID_."
+                    : "A tabela não tem chave primária: a grade do H2 Studio não vai conseguir editar as linhas dela.");
         }
         for (ForeignKey f : d.foreignKeys) {
             if (!f.dropped) {
@@ -315,12 +497,26 @@ public final class DdlBuilder {
             }
         }
         sql.add("CREATE TABLE " + table(tn) + " (\n    " + String.join(",\n    ", lines) + "\n)");
+        for (Column c : cols) {
+            if (c.identity && type == DbType.FIREBIRD_25) {
+                firebird25Identity(tn, currentName(c));
+            }
+        }
         for (Index i : d.indexes) {
             if (!i.dropped && !i.automatic) {
                 sql.add(createIndex(i, tn));
             }
         }
         comments(tn, true);
+    }
+
+    /** Firebird 2.5 não tem IDENTITY: generator + gatilho BEFORE INSERT, o padrão dos sistemas da época. */
+    private void firebird25Identity(String tableName, String column) {
+        String gen = fbName("GEN_" + tableName + "_" + column);
+        String trg = fbName("TG_" + tableName + "_BI");
+        sql.add("CREATE GENERATOR " + id(gen));
+        sql.add("CREATE TRIGGER " + id(trg) + " FOR " + table(tableName) + " ACTIVE BEFORE INSERT POSITION 0 AS\n"
+                + "BEGIN\n  IF (NEW." + id(column) + " IS NULL) THEN NEW." + id(column) + " = GEN_ID(" + id(gen) + ", 1);\nEND");
     }
 
     private String fkClause(ForeignKey f) {
@@ -335,20 +531,32 @@ public final class DdlBuilder {
     }
 
     private String createIndex(Index i, String tableName) {
-        return "CREATE " + (i.unique ? "UNIQUE " : "") + "INDEX " + qualifiedIndex(normalizeName(i.name, casing)) + " ON "
+        String n = normalizeName(i.name, casing);
+        return "CREATE " + (i.unique ? "UNIQUE " : "") + "INDEX " + (type == DbType.H2 ? qualifiedIndex(n) : id(n)) + " ON "
                 + table(tableName) + " (" + String.join(", ", i.columns.stream().map(this::id).toList()) + ")";
     }
 
     private void comments(String tn, boolean create) {
+        if (type == DbType.SQLSERVER || type == DbType.SQLITE) {
+            return; // avisado na validação
+        }
         String tc = norm(d.comment);
+        if (type == DbType.MYSQL || type == DbType.MARIADB) {
+            // comentários de coluna vão na própria definição (CREATE / CHANGE COLUMN)
+            if (create ? tc != null : !Objects.equals(tc, norm(d.originalComment))) {
+                sql.add("ALTER TABLE " + table(tn) + " COMMENT = " + (tc == null ? "''" : lit(tc)));
+            }
+            return;
+        }
+        String empty = type == DbType.H2 ? "''" : "NULL";
         if (create ? tc != null : !Objects.equals(tc, norm(d.originalComment))) {
-            sql.add("COMMENT ON TABLE " + table(tn) + " IS " + (tc == null ? "''" : lit(tc)));
+            sql.add("COMMENT ON TABLE " + table(tn) + " IS " + (tc == null ? empty : lit(tc)));
         }
         for (Column c : d.activeColumns()) {
             String cc = norm(c.comment);
             String oc = c.isNew() ? null : norm(c.original.comment);
             if (create || c.isNew() ? cc != null : !Objects.equals(cc, oc)) {
-                sql.add("COMMENT ON COLUMN " + table(tn) + "." + id(currentName(c)) + " IS " + (cc == null ? "''" : lit(cc)));
+                sql.add("COMMENT ON COLUMN " + table(tn) + "." + id(currentName(c)) + " IS " + (cc == null ? empty : lit(cc)));
             }
         }
     }
@@ -471,6 +679,340 @@ public final class DdlBuilder {
         }
         // 8) comentários
         comments(t, false);
+    }
+
+    // =====================================================================
+    // ALTER TABLE nos outros bancos
+    // =====================================================================
+
+    private boolean mysql() {
+        return type == DbType.MYSQL || type == DbType.MARIADB;
+    }
+
+    /** [schema].[tabela] sem aspas extras, para o sp_rename do SQL Server. */
+    private String mssqlName(String tableName, String column) {
+        String base = (d.schema == null || d.schema.isEmpty() ? "" : DbType.SQLSERVER.quote(d.schema) + ".")
+                + DbType.SQLSERVER.quote(tableName);
+        return column == null ? base : base + "." + DbType.SQLSERVER.quote(column);
+    }
+
+    /** O SQL Server guarda o DEFAULT como restrição com nome gerado: acha e remove. */
+    private String mssqlDropDefault(String tableName, String column) {
+        String obj = mssqlName(tableName, null).replace("'", "''");
+        return "DECLARE @df sysname = (SELECT d.name FROM sys.default_constraints d JOIN sys.columns c "
+                + "ON c.object_id = d.parent_object_id AND c.column_id = d.parent_column_id "
+                + "WHERE d.parent_object_id = OBJECT_ID(N'" + obj + "') AND c.name = N'" + column.replace("'", "''") + "'); "
+                + "IF @df IS NOT NULL EXEC(N'ALTER TABLE " + obj.replace("'", "''") + " DROP CONSTRAINT [' + @df + N']')";
+    }
+
+    private String dropFk(String t, String name) {
+        return "ALTER TABLE " + table(t) + (mysql() ? " DROP FOREIGN KEY " : " DROP CONSTRAINT ") + id(name);
+    }
+
+    private String dropIndex(String t, String name) {
+        return switch (type) {
+            case POSTGRESQL -> "DROP INDEX " + (d.schema == null || d.schema.isEmpty() ? "" : id(d.schema) + ".") + id(name);
+            case MYSQL, MARIADB, SQLSERVER -> "DROP INDEX " + id(name) + " ON " + table(t);
+            default -> "DROP INDEX " + id(name);
+        };
+    }
+
+    private void buildAlterOther() {
+        String tn = d.originalName;
+        String newName = normalizeName(d.name, casing);
+        if (!newName.equals(d.originalName) && !d.name.trim().equals(d.originalName)) {
+            sql.add(type == DbType.SQLSERVER
+                    ? "EXEC sp_rename N'" + mssqlName(tn, null).replace("'", "''") + "', N'" + newName.replace("'", "''") + "'"
+                    : "ALTER TABLE " + table(tn) + " RENAME TO " + id(newName));
+            tn = newName;
+        }
+        final String t = tn;
+        Map<String, String> renamed = new HashMap<>();
+        for (Column c : d.columns) {
+            if (!c.isNew() && !c.dropped) {
+                renamed.put(c.original.name, currentName(c));
+            }
+        }
+        // 1) chaves estrangeiras alteradas/removidas
+        List<ForeignKey> fkToAdd = new ArrayList<>();
+        for (ForeignKey f : d.foreignKeys) {
+            boolean changed = !f.isNew() && !sameFk(f, renamed);
+            if (!f.isNew() && (f.dropped || changed)) {
+                sql.add(dropFk(t, f.original.name));
+            }
+            if (!f.dropped && (f.isNew() || changed)) {
+                fkToAdd.add(f);
+            }
+        }
+        // 2) índices alterados/removidos
+        List<Index> idxToAdd = new ArrayList<>();
+        for (Index i : d.indexes) {
+            if (i.automatic) {
+                continue;
+            }
+            boolean changed = !i.isNew() && !sameIndex(i, renamed);
+            if (!i.isNew() && (i.dropped || changed)) {
+                sql.add(dropIndex(t, i.original.name));
+            }
+            if (!i.dropped && (i.isNew() || changed)) {
+                idxToAdd.add(i);
+            }
+        }
+        // 3) chave primária
+        List<String> oldPk = d.columns.stream().filter(c -> !c.isNew() && c.original.primaryKey).map(c -> c.original.name).toList();
+        List<String> newPk = d.activeColumns().stream().filter(c -> c.primaryKey).map(this::currentName).toList();
+        List<String> oldPkRenamed = oldPk.stream().map(n -> renamed.getOrDefault(n, n)).toList();
+        boolean pkChanged = !oldPkRenamed.equals(newPk)
+                || d.columns.stream().anyMatch(c -> c.dropped && !c.isNew() && c.original.primaryKey);
+        if (pkChanged && !oldPk.isEmpty()) {
+            if (mysql()) {
+                sql.add("ALTER TABLE " + table(t) + " DROP PRIMARY KEY");
+            } else if (d.pkName == null || d.pkName.isBlank()) {
+                errors.add("Não foi possível descobrir o nome da chave primária atual para removê-la.");
+                return;
+            } else {
+                sql.add("ALTER TABLE " + table(t) + " DROP CONSTRAINT " + id(d.pkName));
+            }
+            if (newPk.isEmpty()) {
+                warnings.add("A chave primária será removida.");
+            }
+        }
+        // 4) colunas existentes
+        for (Column c : d.columns) {
+            if (c.isNew()) {
+                continue;
+            }
+            if (c.dropped) {
+                if (type == DbType.SQLSERVER) {
+                    sql.add(mssqlDropDefault(t, c.original.name));
+                }
+                sql.add("ALTER TABLE " + table(t) + (type.isFirebird() ? " DROP " : " DROP COLUMN ") + id(c.original.name));
+                warnings.add("A coluna " + c.original.name + " será REMOVIDA com todos os seus dados.");
+                continue;
+            }
+            String cur = c.original.name;
+            String nn = currentName(c);
+            Column x = c.copy();
+            x.name = nn;
+            boolean typeChanged = !sameType(c, c.original);
+            boolean defChanged = !c.identity && !Objects.equals(norm(c.defaultExpr), norm(c.original.defaultExpr));
+            boolean wantNotNull = !c.nullable || c.primaryKey;
+            boolean hadNotNull = !c.original.nullable || c.original.primaryKey;
+            boolean nullChanged = wantNotNull != hadNotNull;
+            boolean commentChanged = !Objects.equals(norm(c.comment), norm(c.original.comment));
+            if (typeChanged && !isWidening(c.original, c)) {
+                warnings.add("Mudança de tipo em " + nn + " (" + typeSql(c.original, type) + " → " + typeSql(c, type)
+                        + "): falha se algum valor não couber no novo tipo.");
+            }
+            if (nullChanged && wantNotNull) {
+                warnings.add("A coluna " + nn + " passará a ser obrigatória: falha se já existir linha com ela vazia.");
+            }
+            if (mysql()) {
+                // o MySQL altera a coluna inteira de uma vez (nome, tipo, padrão, obrigatoriedade e comentário)
+                if (!nn.equals(cur) || typeChanged || defChanged || nullChanged || commentChanged) {
+                    sql.add("ALTER TABLE " + table(t) + " CHANGE COLUMN " + id(cur) + " " + columnDefOther(x, true));
+                }
+                continue;
+            }
+            if (!nn.equals(cur)) {
+                sql.add(switch (type) {
+                    case SQLSERVER -> "EXEC sp_rename N'" + mssqlName(t, cur).replace("'", "''") + "', N'"
+                            + nn.replace("'", "''") + "', N'COLUMN'";
+                    case FIREBIRD, FIREBIRD_25 -> "ALTER TABLE " + table(t) + " ALTER COLUMN " + id(cur) + " TO " + id(nn);
+                    default -> "ALTER TABLE " + table(t) + " RENAME COLUMN " + id(cur) + " TO " + id(nn);
+                });
+                cur = nn;
+            }
+            if (type == DbType.SQLSERVER) {
+                if (typeChanged || nullChanged) {
+                    sql.add("ALTER TABLE " + table(t) + " ALTER COLUMN " + id(cur) + " " + typeSql(c, type)
+                            + (wantNotNull ? " NOT NULL" : " NULL"));
+                }
+                if (defChanged) {
+                    sql.add(mssqlDropDefault(t, cur));
+                    if (norm(c.defaultExpr) != null) {
+                        sql.add("ALTER TABLE " + table(t) + " ADD CONSTRAINT " + id(normalizeName("df_" + t + "_" + cur, casing))
+                                + " DEFAULT " + c.defaultExpr.trim() + " FOR " + id(cur));
+                    }
+                }
+                continue;
+            }
+            if (typeChanged) {
+                sql.add(type == DbType.POSTGRESQL
+                        ? "ALTER TABLE " + table(t) + " ALTER COLUMN " + id(cur) + " TYPE " + typeSql(c, type)
+                        + " USING " + id(cur) + "::" + typeSql(c, type)
+                        : "ALTER TABLE " + table(t) + " ALTER COLUMN " + id(cur) + " TYPE " + typeSql(c, type));
+            }
+            if (defChanged) {
+                sql.add("ALTER TABLE " + table(t) + " ALTER COLUMN " + id(cur)
+                        + (norm(c.defaultExpr) == null ? " DROP DEFAULT" : " SET DEFAULT " + c.defaultExpr.trim()));
+            }
+            // PostgreSQL: ADD PRIMARY KEY já torna a coluna obrigatória; Firebird exige antes
+            boolean becomesPk = c.primaryKey && !c.original.primaryKey;
+            if (nullChanged && !(becomesPk && type == DbType.POSTGRESQL)) {
+                sql.add("ALTER TABLE " + table(t) + " ALTER COLUMN " + id(cur) + (wantNotNull ? " SET NOT NULL" : " DROP NOT NULL"));
+            }
+        }
+        // 5) colunas novas
+        for (Column c : d.activeColumns()) {
+            if (!c.isNew()) {
+                continue;
+            }
+            Column x = c.copy();
+            x.name = currentName(c);
+            boolean keyword = type == DbType.POSTGRESQL || mysql() || type == DbType.SQLITE;
+            sql.add("ALTER TABLE " + table(t) + " ADD " + (keyword ? "COLUMN " : "") + columnDefOther(x, false));
+            if (c.identity && type == DbType.FIREBIRD_25) {
+                firebird25Identity(t, x.name);
+            }
+            if (!c.nullable && !c.identity && norm(c.defaultExpr) == null && !c.primaryKey) {
+                warnings.add("A nova coluna " + x.name + " é obrigatória e não tem valor padrão: só funciona se a tabela estiver vazia.");
+            }
+        }
+        // 6) nova chave primária
+        if (pkChanged && !newPk.isEmpty()) {
+            String cols = String.join(", ", newPk.stream().map(this::id).toList());
+            sql.add(type == DbType.SQLSERVER || type.isFirebird()
+                    ? "ALTER TABLE " + table(t) + " ADD CONSTRAINT " + id(pkConstraintName(t)) + " PRIMARY KEY (" + cols + ")"
+                    : "ALTER TABLE " + table(t) + " ADD PRIMARY KEY (" + cols + ")");
+        }
+        // 7) índices e chaves
+        for (Index i : idxToAdd) {
+            sql.add(createIndex(i, t));
+        }
+        for (ForeignKey f : fkToAdd) {
+            sql.add("ALTER TABLE " + table(t) + " ADD " + fkClause(f));
+        }
+        // 8) comentários
+        comments(t, false);
+    }
+
+    // =====================================================================
+    // SQLite: recriar a tabela
+    // =====================================================================
+
+    /** O ALTER TABLE do SQLite só renomeia e adiciona colunas simples: o resto exige recriar. */
+    private boolean sqliteNeedsRebuild() {
+        for (Column c : d.columns) {
+            if (c.isNew()) {
+                if (!c.dropped && (c.primaryKey || c.identity || (!c.nullable && norm(c.defaultExpr) == null))) {
+                    return true;
+                }
+                continue;
+            }
+            if (c.dropped || !sameType(c, c.original) || c.primaryKey != c.original.primaryKey
+                    || c.nullable != c.original.nullable || c.identity != c.original.identity
+                    || !Objects.equals(norm(c.defaultExpr), norm(c.original.defaultExpr))) {
+                return true;
+            }
+        }
+        for (ForeignKey f : d.foreignKeys) {
+            if (f.isNew() ? !f.dropped : f.dropped || !sameFk(f, Map.of())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void buildSqliteRebuild() {
+        String oldName = d.originalName;
+        String newName = normalizeName(d.name, casing);
+        String finalName = !newName.equals(oldName) && !d.name.trim().equals(oldName) ? newName : oldName;
+        String tmp = finalName + "__h2studio_novo";
+        List<Column> cols = d.activeColumns();
+        List<String> lines = new ArrayList<>();
+        for (Column c : cols) {
+            Column x = c.copy();
+            x.name = currentName(c);
+            lines.add(columnDefOther(x, false));
+        }
+        List<String> pk = cols.stream().filter(c -> c.primaryKey).map(this::currentName).toList();
+        boolean inlinePk = cols.stream().anyMatch(c -> c.identity);
+        if (!pk.isEmpty() && !inlinePk) {
+            lines.add("PRIMARY KEY (" + String.join(", ", pk.stream().map(this::id).toList()) + ")");
+        }
+        for (ForeignKey f : d.foreignKeys) {
+            if (!f.dropped) {
+                lines.add(fkClause(f));
+            }
+        }
+        sql.add("CREATE TABLE " + id(tmp) + " (\n    " + String.join(",\n    ", lines) + "\n)");
+        List<String> to = new ArrayList<>();
+        List<String> from = new ArrayList<>();
+        for (Column c : cols) {
+            if (!c.isNew()) {
+                to.add(id(currentName(c)));
+                from.add(id(c.original.name));
+            }
+        }
+        if (!to.isEmpty()) {
+            sql.add("INSERT INTO " + id(tmp) + " (" + String.join(", ", to) + ") SELECT " + String.join(", ", from)
+                    + " FROM " + table(oldName));
+        }
+        sql.add("DROP TABLE " + table(oldName));
+        sql.add("ALTER TABLE " + id(tmp) + " RENAME TO " + id(finalName));
+        Map<String, String> renamed = new HashMap<>();
+        for (Column c : d.columns) {
+            if (!c.isNew() && !c.dropped) {
+                renamed.put(c.original.name, currentName(c));
+            }
+        }
+        int n = 0;
+        for (Index i : d.indexes) {
+            if (i.dropped) {
+                continue;
+            }
+            Index x = i.copy();
+            x.columns = i.columns.stream().map(col -> renamed.getOrDefault(col, col)).toList();
+            if (i.automatic) {
+                // UNIQUE da definição antiga vira índice único com nome próprio
+                x.name = "ux_" + finalName + "_" + (++n);
+                x.unique = true;
+            }
+            sql.add(createIndex(x, finalName));
+        }
+        warnings.add("SQLite: esta alteração recria a tabela (cria a nova estrutura, copia os dados, apaga a antiga e "
+                + "renomeia), tudo numa transação. Gatilhos desta tabela, se houver, precisam ser recriados.");
+        for (Column c : cols) {
+            if (c.isNew() && !c.nullable && norm(c.defaultExpr) == null && !c.identity) {
+                warnings.add("A nova coluna " + currentName(c) + " é obrigatória e não tem valor padrão: só funciona se a tabela estiver vazia.");
+            }
+            if (!c.isNew() && !sameType(c, c.original) && !isWidening(c.original, c)) {
+                warnings.add("No SQLite a mudança de tipo de " + currentName(c) + " só muda a declaração: os valores são copiados como estão.");
+            }
+        }
+        for (Column c : d.columns) {
+            if (c.dropped && !c.isNew()) {
+                warnings.add("A coluna " + c.original.name + " será REMOVIDA com todos os seus dados.");
+            }
+        }
+    }
+
+    /**
+     * Comandos para excluir a tabela. Com {@code cascade}: CASCADE no H2/PostgreSQL; nos outros,
+     * remove antes as chaves estrangeiras das tabelas que apontam para ela.
+     */
+    public static List<String> dropTableStatements(DbType type, String schema, String table, boolean cascade,
+                                                   List<Meta.ForeignKeyInfo> incoming, SqlCompletion.Casing casing,
+                                                   String defaultSchema) {
+        DbType t = type == null ? DbType.H2 : type;
+        if (t == DbType.H2) {
+            return List.of(dropTable(schema, table, cascade, casing, defaultSchema));
+        }
+        java.util.function.BiFunction<String, String, String> ref = (sc, n) ->
+                sc == null || sc.isEmpty() || sc.equals(defaultSchema)
+                        ? SqlCompletion.quoteIfNeeded(n, casing, t)
+                        : SqlCompletion.quoteIfNeeded(sc, casing, t) + "." + SqlCompletion.quoteIfNeeded(n, casing, t);
+        List<String> out = new ArrayList<>();
+        if (cascade && t != DbType.POSTGRESQL && t != DbType.SQLITE && incoming != null) {
+            for (Meta.ForeignKeyInfo f : incoming) {
+                out.add("ALTER TABLE " + ref.apply(f.refSchema(), f.refTable())
+                        + (t == DbType.MYSQL || t == DbType.MARIADB ? " DROP FOREIGN KEY " : " DROP CONSTRAINT ")
+                        + SqlCompletion.quoteIfNeeded(f.name(), casing, t));
+            }
+        }
+        out.add("DROP TABLE " + ref.apply(schema, table) + (cascade && t == DbType.POSTGRESQL ? " CASCADE" : ""));
+        return out;
     }
 
     private boolean sameIndex(Index i, Map<String, String> renamed) {

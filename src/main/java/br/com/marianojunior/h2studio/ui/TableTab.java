@@ -110,9 +110,6 @@ public class TableTab extends Tab implements SessionTab {
         alter.setOnAction(e -> onAlterStructure.run());
         alter.setDisable(table.view() || session.isReadOnly());
         HBox structBar = new HBox(alter);
-        if (!session.isH2()) {
-            structBar.getChildren().clear(); // o designer de estrutura ainda é só do H2
-        }
         structBar.setPadding(new Insets(0, 0, 6, 0));
         BorderPane structPane = new BorderPane(structure);
         structPane.setTop(structBar);

@@ -472,6 +472,9 @@ public class DatabaseTree extends VBox {
             if (!s.isH2()) {
                 MenuItem q = new MenuItem("Nova consulta SQL");
                 q.setOnAction(e -> onNewQuery.accept(s));
+                MenuItem nt = new MenuItem("Nova tabela…");
+                nt.setOnAction(e -> onNewTable.accept(s, null)); // null: schema/banco em uso pela conexão
+                nt.setDisable(s.isReadOnly());
                 MenuItem backups = new MenuItem("Backup e restauração…");
                 backups.setOnAction(e -> onDbAction.accept("backups", s));
                 MenuItem refresh = new MenuItem("Atualizar");
@@ -480,7 +483,7 @@ public class DatabaseTree extends VBox {
                 copyLoc.setOnAction(e -> Fx.copy(s.config().location()));
                 MenuItem close = new MenuItem("Desconectar");
                 close.setOnAction(e -> onCloseSession.accept(s));
-                return new ContextMenu(q, backups, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
+                return new ContextMenu(q, nt, backups, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
             }
             MenuItem query = new MenuItem("Nova consulta SQL");
             query.setOnAction(e -> onNewQuery.accept(s));
@@ -514,9 +517,12 @@ public class DatabaseTree extends VBox {
             if (!sn.session().isH2()) {
                 MenuItem copy = new MenuItem("Copiar nome");
                 copy.setOnAction(e -> Fx.copy(sn.schema()));
+                MenuItem nt = new MenuItem("Nova tabela em " + sn.schema() + "…");
+                nt.setOnAction(e -> onNewTable.accept(sn.session(), sn.schema()));
+                nt.setDisable(sn.session().isReadOnly());
                 ContextMenu m = connMenu(sn.session());
-                m.getItems().add(0, copy);
-                m.getItems().add(1, new SeparatorMenuItem());
+                m.getItems().removeIf(i -> "Nova tabela…".equals(i.getText()));
+                m.getItems().addAll(0, List.of(nt, copy, new SeparatorMenuItem()));
                 return m;
             }
             MenuItem newTable = new MenuItem("Nova tabela em " + sn.schema() + "…");
@@ -541,8 +547,20 @@ public class DatabaseTree extends VBox {
                 export.setOnAction(e -> onTableAction.accept("exportar", t));
                 MenuItem query = new MenuItem("Consultar no editor SQL");
                 query.setOnAction(e -> onQueryTable.accept(t));
-                return new ContextMenu(open, query, new SeparatorMenuItem(), export, new SeparatorMenuItem(), copyName,
+                ContextMenu m = new ContextMenu(open, query, new SeparatorMenuItem(), export, new SeparatorMenuItem(), copyName,
                         copySelect);
+                if (!t.table().view()) {
+                    boolean ro = t.session().isReadOnly();
+                    MenuItem alter = new MenuItem("Alterar estrutura…");
+                    alter.setOnAction(e -> onAlterTable.accept(t));
+                    alter.setDisable(ro);
+                    MenuItem drop = new MenuItem("Excluir tabela…");
+                    drop.setOnAction(e -> onDropTable.accept(t));
+                    drop.setDisable(ro);
+                    m.getItems().addAll(2, List.of(alter, new SeparatorMenuItem()));
+                    m.getItems().addAll(new SeparatorMenuItem(), drop);
+                }
+                return m;
             }
             MenuItem sql = new MenuItem("Consultar com SQL");
             sql.setOnAction(e -> onQueryTable.accept(t));

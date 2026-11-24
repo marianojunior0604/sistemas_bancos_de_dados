@@ -3,6 +3,7 @@ package br.com.marianojunior.h2studio.ui;
 import br.com.marianojunior.h2studio.core.AppPreferences;
 import br.com.marianojunior.h2studio.core.BackupService;
 import br.com.marianojunior.h2studio.core.DbSession;
+import br.com.marianojunior.h2studio.core.DbType;
 import br.com.marianojunior.h2studio.core.DdlBuilder;
 import br.com.marianojunior.h2studio.core.FlywayInfo;
 import br.com.marianojunior.h2studio.core.Meta;
@@ -71,7 +72,8 @@ public class TableDesignerTab extends Tab implements SessionTab {
 
     private final DbSession session;
     private final SqlCompletion.Casing casing;
-    private final String defaultSchema;
+    private final DbType dbType;
+    private String defaultSchema;
     private TableDesign design;
     private DdlBuilder.Plan plan = new DdlBuilder.Plan(List.of(), List.of(), List.of());
 
@@ -104,7 +106,9 @@ public class TableDesignerTab extends Tab implements SessionTab {
     public TableDesignerTab(DbSession session, String schema, String table) {
         this.session = session;
         this.casing = SqlCompletion.casingOf(session.config());
-        this.defaultSchema = casing == SqlCompletion.Casing.LOWER ? "public" : "PUBLIC";
+        this.dbType = session.type();
+        this.defaultSchema = session.isH2() ? (casing == SqlCompletion.Casing.LOWER ? "public" : "PUBLIC")
+                : schema == null ? "" : schema;
         setGraphic(Icons.design());
         setText(table == null ? "Nova tabela" : "Estrutura: " + table);
         setTooltip(new Tooltip(session.displayName()));
@@ -114,12 +118,16 @@ public class TableDesignerTab extends Tab implements SessionTab {
         setDisabledAll(true);
 
         Fx.then(session.submit(c -> {
-            TableDesign d = table == null ? TableDesign.newTable(schema, casing) : TableDesign.load(c, schema, table);
-            SqlCompletion.Catalog cat = SqlCompletion.loadCatalog(c, casing);
-            Meta.TableInfo fw = FlywayInfo.findHistoryTable(c).orElse(null);
+            TableDesign d = table == null ? TableDesign.newTable(schema, casing, dbType) : TableDesign.load(c, schema, table, dbType);
+            SqlCompletion.Catalog cat = SqlCompletion.loadCatalog(c, casing, dbType);
+            Meta.TableInfo fw = findFlyway(c);
             List<FlywayInfo.Migration> ms = fw == null ? List.of() : FlywayInfo.read(c, fw);
-            return new Object[]{d, cat, fw, ms};
+            String current = session.isH2() ? null : MetadataService.currentSchema(c);
+            return new Object[]{d, cat, fw, ms, current};
         }), r -> {
+            if (r[4] != null) {
+                defaultSchema = (String) r[4];
+            }
             design = (TableDesign) r[0];
             catalog = (SqlCompletion.Catalog) r[1];
             flywayTable = (Meta.TableInfo) r[2];
@@ -129,6 +137,24 @@ public class TableDesignerTab extends Tab implements SessionTab {
         }, e -> {
             messages.getChildren().setAll(msg("Não foi possível ler a estrutura: " + Fx.shortMessage(e), "text-error"));
         });
+    }
+
+    /** O Flyway só interessa se a tabela de histórico estiver no banco/schema atual. */
+    private Meta.TableInfo findFlyway(java.sql.Connection c) {
+        try {
+            if (session.isH2()) {
+                return FlywayInfo.findHistoryTable(c).orElse(null);
+            }
+            String sch = MetadataService.currentSchema(c);
+            for (Meta.TableInfo t : MetadataService.tables(c, sch == null ? "" : sch)) {
+                if (t.name().equalsIgnoreCase("flyway_schema_history") || t.name().equalsIgnoreCase("schema_version")) {
+                    return t;
+                }
+            }
+        } catch (Exception e) {
+            // sem Flyway: segue normalmente
+        }
+        return null;
     }
 
     public void setOnApplied(BiConsumer<String, String> c) {
@@ -154,7 +180,7 @@ public class TableDesignerTab extends Tab implements SessionTab {
     // =====================================================================
 
     private Node buildLayout() {
-        tableName.setPromptText("NOME_DA_TABELA");
+        tableName.setPromptText(casing == SqlCompletion.Casing.UPPER ? "NOME_DA_TABELA" : "nome_da_tabela");
         tableName.setPrefColumnCount(24);
         tableName.textProperty().addListener((o, a, b) -> {
             if (!building) {
@@ -211,7 +237,7 @@ public class TableDesignerTab extends Tab implements SessionTab {
         applyBtn.setOnAction(e -> apply());
         migrationBtn.setTooltip(new Tooltip("Gera um arquivo V…__descricao.sql para o Flyway do sistema"));
         migrationBtn.setOnAction(e -> saveMigration());
-        copyBtn.setOnAction(e -> Fx.copy(plan.script()));
+        copyBtn.setOnAction(e -> Fx.copy(plan.script(dbType)));
         discardBtn.setOnAction(e -> reload());
         Region sp = new Region();
         HBox.setHgrow(sp, Priority.ALWAYS);
@@ -267,7 +293,9 @@ public class TableDesignerTab extends Tab implements SessionTab {
         tableName.setText(design.name);
         tableComment.setText(design.comment == null ? "" : design.comment);
         building = false;
-        schemaLabel.setText("schema " + design.schema);
+        schemaLabel.setText(design.schema == null || design.schema.isEmpty() ? dbType.shortLabel()
+                : (session.isH2() || dbType != DbType.MYSQL && dbType != DbType.MARIADB ? "schema " : "banco ") + design.schema
+                + (session.isH2() ? "" : " · " + dbType.shortLabel()));
         existingTables = new HashSet<>();
         for (Meta.TableInfo t : catalog.tables()) {
             if (t.schema().equals(design.schema)) {
@@ -298,8 +326,8 @@ public class TableDesignerTab extends Tab implements SessionTab {
         String table = design.originalName;
         setDisabledAll(true);
         Fx.then(session.submit(c -> new Object[]{
-            table == null ? TableDesign.newTable(schema, casing) : TableDesign.load(c, schema, table),
-            SqlCompletion.loadCatalog(c, casing)}), r -> {
+            table == null ? TableDesign.newTable(schema, casing, dbType) : TableDesign.load(c, schema, table, dbType),
+            SqlCompletion.loadCatalog(c, casing, dbType)}), r -> {
                 design = (TableDesign) r[0];
                 catalog = (SqlCompletion.Catalog) r[1];
                 afterLoad();
@@ -339,7 +367,7 @@ public class TableDesignerTab extends Tab implements SessionTab {
         pk.setTooltip(new Tooltip("Chave primária"));
         TextField name = new TextField(c.name);
         ComboBox<String> type = new ComboBox<>(FXCollections.observableArrayList(
-                TableDesign.TYPES.stream().map(TableDesign.TypeInfo::name).toList()));
+                TableDesign.typesFor(dbType).stream().map(TableDesign.TypeInfo::name).toList()));
         type.setEditable(true);
         type.setValue(c.type);
         type.setMaxWidth(Double.MAX_VALUE);
@@ -361,7 +389,7 @@ public class TableDesignerTab extends Tab implements SessionTab {
         action.setTooltip(new Tooltip(c.dropped ? "Desfazer remoção" : c.isNew() ? "Remover coluna" : "Remover coluna (apaga os dados dela)"));
 
         Runnable refreshState = () -> {
-            TableDesign.TypeInfo ti = TableDesign.typeInfo(c.type);
+            TableDesign.TypeInfo ti = TableDesign.typeInfo(c.type, dbType);
             len.setDisable(c.dropped || (ti != null && !ti.hasLength()));
             scale.setDisable(c.dropped || ti == null || !ti.hasScale());
             notNull.setDisable(c.dropped || c.primaryKey || c.identity);
@@ -405,7 +433,7 @@ public class TableDesignerTab extends Tab implements SessionTab {
         });
         type.valueProperty().addListener((o, a, b) -> {
             c.type = b == null ? "" : b.trim().toUpperCase(Locale.ROOT);
-            TableDesign.TypeInfo ti = TableDesign.typeInfo(c.type);
+            TableDesign.TypeInfo ti = TableDesign.typeInfo(c.type, dbType);
             boolean typeChanged = a != null && !a.trim().equalsIgnoreCase(c.type);
             if (ti != null) {
                 // ao trocar de tipo (ex.: VARCHAR(255) → DECIMAL) o tamanho volta ao padrão do novo tipo
@@ -476,9 +504,9 @@ public class TableDesignerTab extends Tab implements SessionTab {
         columnsGrid.addRow(r, center(pk), name, type, len, scale, center(notNull), center(identity), def, comment, action);
     }
 
-    private static boolean isModified(Column c) {
+    private boolean isModified(Column c) {
         Column o = c.original;
-        return !Objects.equals(c.name, o.name) || !DdlBuilder.typeSql(c).equals(DdlBuilder.typeSql(o))
+        return !Objects.equals(c.name, o.name) || !DdlBuilder.typeSql(c, dbType).equals(DdlBuilder.typeSql(o, dbType))
                 || c.nullable != o.nullable || c.primaryKey != o.primaryKey
                 || !Objects.equals(blankToNull(c.defaultExpr), blankToNull(o.defaultExpr))
                 || !Objects.equals(blankToNull(c.comment), blankToNull(o.comment));
@@ -780,13 +808,13 @@ public class TableDesignerTab extends Tab implements SessionTab {
         if (design == null) {
             return;
         }
-        plan = DdlBuilder.build(design, casing, defaultSchema, existingTables);
+        plan = DdlBuilder.build(design, casing, defaultSchema, existingTables, dbType);
         if (!plan.errors().isEmpty()) {
             sqlPreview.setText("-- Corrija os erros para ver o SQL:\n-- " + String.join("\n-- ", plan.errors()));
         } else if (!plan.hasChanges()) {
             sqlPreview.setText("-- Nenhuma alteração.");
         } else {
-            sqlPreview.setText(plan.script());
+            sqlPreview.setText(plan.script(dbType));
         }
         sqlTab.setText(plan.hasChanges() ? "SQL (" + plan.statements().size() + ")" : "SQL");
         messages.getChildren().clear();
@@ -840,7 +868,7 @@ public class TableDesignerTab extends Tab implements SessionTab {
         a.setTitle("H2 Studio");
         a.setHeaderText(design.isNew() ? "Criar a tabela " + DdlBuilder.normalizeName(design.name, casing) + "?"
                 : "Aplicar " + plan.statements().size() + " alteração(ões) em " + design.originalName + "?");
-        TextArea ta = new TextArea(plan.script());
+        TextArea ta = new TextArea(plan.script(dbType));
         ta.setEditable(false);
         ta.getStyleClass().add("mono");
         ta.setPrefSize(720, 260);
@@ -849,9 +877,19 @@ public class TableDesignerTab extends Tab implements SessionTab {
             box.getChildren().add(Fx.wrapLabel("⚠ " + String.join("\n⚠ ", plan.warnings())));
         }
         box.getChildren().add(ta);
-        String note = "No H2 cada comando de estrutura é gravado na hora: se um falhar, os anteriores já terão sido aplicados.";
-        if (AppPreferences.autoBackup()) {
-            note += " Um backup do banco será feito antes.";
+        boolean transactional = DdlBuilder.transactionalDdl(dbType);
+        String note;
+        if (session.isH2()) {
+            note = "No H2 cada comando de estrutura é gravado na hora: se um falhar, os anteriores já terão sido aplicados.";
+            if (AppPreferences.autoBackup()) {
+                note += " Um backup do banco será feito antes.";
+            }
+        } else if (transactional) {
+            note = "No " + dbType.shortLabel() + " os comandos rodam numa transação: se um falhar, nada é alterado.";
+        } else {
+            note = "No " + dbType.shortLabel() + " cada comando de estrutura é gravado na hora (sem transação): "
+                    + "se um falhar, os anteriores já terão sido aplicados. Se a tabela tem dados importantes, "
+                    + "faça um backup antes (menu do banco → Backup e restauração).";
         }
         if (flywayTable != null) {
             note += "\nEste banco usa Flyway: esta alteração não ficará registrada nas migrações do sistema.";
@@ -874,26 +912,50 @@ public class TableDesignerTab extends Tab implements SessionTab {
         SqlHistory history = SqlHistory.forDatabase(session.config());
         Fx.then(session.submit(c -> {
             String backup = null;
-            if (AppPreferences.autoBackup()) {
+            if (session.isH2() && AppPreferences.autoBackup()) {
                 backup = BackupService.backup(c, session.config(), AppPreferences.backupsToKeep()).getFileName().toString();
                 session.setBackedUp(true);
             }
             int done = 0;
-            for (String st : stmts) {
-                try (java.sql.Statement s = c.createStatement()) {
-                    s.execute(st);
-                    history.add(st, true, "designer de tabela");
-                    done++;
-                } catch (SQLException ex) {
-                    history.add(st, false, SqlErrors.friendly(ex));
-                    return new Object[]{done, ex, backup};
+            boolean autoCommit = c.getAutoCommit();
+            if (transactional) {
+                c.setAutoCommit(false);
+            }
+            try {
+                for (String st : stmts) {
+                    try (java.sql.Statement s = c.createStatement()) {
+                        s.execute(st);
+                        done++;
+                    } catch (SQLException ex) {
+                        history.add(st, false, SqlErrors.friendly(ex, dbType));
+                        if (transactional) {
+                            c.rollback();
+                            return new Object[]{0, ex, backup, done};
+                        }
+                        return new Object[]{done, ex, backup, done};
+                    }
+                }
+                if (transactional) {
+                    c.commit();
+                }
+            } finally {
+                if (transactional) {
+                    try {
+                        c.setAutoCommit(autoCommit);
+                    } catch (SQLException ignored) {
+                        // conexão já pode ter caído
+                    }
                 }
             }
-            return new Object[]{done, null, backup};
+            for (String st : stmts) {
+                history.add(st, true, "designer de tabela");
+            }
+            return new Object[]{done, null, backup, done};
         }), r -> {
             int done = (Integer) r[0];
             SQLException err = (SQLException) r[1];
             String backup = (String) r[2];
+            int failedAt = (Integer) r[3];
             if (done > 0) {
                 // árvore e abas abertas já se atualizam enquanto a mensagem é exibida
                 boolean nowExistsWithNewName = err == null || design.isNew() || renamedFirst();
@@ -903,9 +965,10 @@ public class TableDesignerTab extends Tab implements SessionTab {
                 Fx.info(window(), "Estrutura aplicada", stmts.size() + " comando(s) executado(s) com sucesso."
                         + (backup != null ? "\nBackup feito antes: " + backup : ""));
             } else {
-                Fx.error(window(), "O comando " + (done + 1) + " de " + stmts.size() + " falhou",
-                        SqlErrors.friendly(err) + "\n\nComando:\n" + stmts.get(done)
-                        + (done > 0 ? "\n\nOs " + done + " comando(s) anteriores JÁ foram aplicados." : "\n\nNada foi alterado.")
+                Fx.error(window(), "O comando " + (failedAt + 1) + " de " + stmts.size() + " falhou",
+                        SqlErrors.friendly(err, dbType) + "\n\nComando:\n" + stmts.get(failedAt)
+                        + (done > 0 ? "\n\nOs " + done + " comando(s) anteriores JÁ foram aplicados."
+                                : failedAt > 0 ? "\n\nA transação foi desfeita: nada foi alterado." : "\n\nNada foi alterado.")
                         + (backup != null ? "\nBackup feito antes: " + backup : ""), err);
             }
             if (err != null && done == 0) {
@@ -927,8 +990,15 @@ public class TableDesignerTab extends Tab implements SessionTab {
 
     /** O primeiro comando do plano é o RENAME da tabela. */
     private boolean renamedFirst() {
-        return !plan.statements().isEmpty() && plan.statements().get(0).contains(" RENAME TO ")
-                && plan.statements().get(0).startsWith("ALTER TABLE") && !plan.statements().get(0).contains(" ALTER COLUMN ");
+        if (plan.statements().isEmpty()) {
+            return false;
+        }
+        String first = plan.statements().get(0);
+        if (first.startsWith("EXEC sp_rename") && !first.contains("N'COLUMN'") && !first.contains("N'INDEX'")) {
+            return true;
+        }
+        return first.contains(" RENAME TO ") && first.startsWith("ALTER TABLE") && !first.contains(" ALTER COLUMN ")
+                && !first.contains(" RENAME COLUMN ");
     }
 
     // =====================================================================
@@ -959,7 +1029,7 @@ public class TableDesignerTab extends Tab implements SessionTab {
         String header = "-- " + desc + "\n-- Gerado pelo H2 Studio em "
                 + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")) + "\n\n";
         try {
-            Files.writeString(f.toPath(), header + plan.script(), StandardCharsets.UTF_8);
+            Files.writeString(f.toPath(), header + plan.script(dbType), StandardCharsets.UTF_8);
             Fx.info(window(), "Migração salva", f.getAbsolutePath()
                     + "\n\nColoque o arquivo em src/main/resources/db/migration do sistema (ou na pasta configurada no Flyway)."
                     + " O Flyway vai aplicar quando o sistema iniciar."
