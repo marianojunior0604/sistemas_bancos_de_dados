@@ -391,6 +391,59 @@ na aba *Estrutura* da tabela, **Nova tabela…** no menu da conexão/schema ou e
 - **Flyway:** se a tabela `flyway_schema_history` estiver no schema/banco em uso, *Salvar como
   migração…* continua disponível, igual ao H2.
 
+## Multi-banco, parte 7 — converter um banco em outro (versão 1.7)
+
+**Ferramentas › Converter para outro banco…**, **Converter para outro banco…** no menu da conexão
+na árvore, ou **Copiar para outro banco…** no menu de uma tabela (já vem só ela marcada).
+
+**Origem:** qualquer banco aberto (H2, PostgreSQL, MySQL/MariaDB, Firebird, SQL Server, SQLite);
+escolha o schema e marque as tabelas. **Destinos:**
+
+| Destino | O que acontece |
+|---|---|
+| Outro banco aberto | cria as tabelas no schema/banco escolhido e copia os dados |
+| Novo arquivo SQLite | cria o arquivo, converte e abre na árvore |
+| Novo banco H2 | cria o `.mv.db` (driver H2 mais novo, usuário `sa` sem senha), converte e abre |
+| Script SQL (.sql) | estrutura + INSERTs no dialeto escolhido, para rodar no psql, mysql, isql, SSMS… |
+| Planilha Excel (.xlsx) | uma aba por tabela e uma aba "Resumo" |
+
+**Analisar** mostra antes de converter: como cada tabela e coluna fica no destino (tipo na origem →
+tipo no destino), o SQL da estrutura e os avisos. **Converter** pede confirmação e mostra o
+andamento (dá para cancelar entre lotes) e, no fim, um relatório por tabela.
+
+Ordem usada: cria as tabelas sem índices nem chaves → copia os dados em lotes de 500 (com commit
+a cada lote) → acerta o próximo número do auto incremento → cria os índices → cria as chaves
+estrangeiras. Assim a ordem das tabelas não importa e a carga é rápida.
+
+- **Tipos:** cada coluna passa por um "tipo comum" e vira o equivalente do destino. Exemplos:
+  `BLOB SUB_TYPE TEXT` ↔ `TEXT`/`LONGTEXT`/`CLOB`/`NVARCHAR(MAX)`; `BOOLEAN` ↔ `BIT` (SQL Server) e
+  `SMALLINT` 1/0 (Firebird 2.5); `DATETIME` ↔ `TIMESTAMP`/`DATETIME2`; `BYTEA` ↔ `BLOB`/`LONGBLOB`/`VARBINARY(MAX)`;
+  `UUID` ↔ `UNIQUEIDENTIFIER` ou `CHAR(36)`; `JSON`/`JSONB` ↔ `JSON` ou texto. Tipos sem equivalente
+  (ENUM, INTERVAL, arrays…) viram texto, com aviso. Entre bancos do mesmo tipo o tipo original é mantido.
+- **Limites de cada banco:** VARCHAR grande demais vira texto longo (Firebird 8.191, SQL Server 4.000,
+  MySQL 16.383 caracteres); no MySQL, se a soma dos VARCHAR passar de 64 KB por linha, os maiores
+  viram TEXT; DECIMAL acima de 18 dígitos no Firebird é reduzido; nomes com mais de 31 caracteres
+  no Firebird são encurtados. Texto sem limite usado em índice (comum no PostgreSQL) vira VARCHAR do
+  tamanho do maior valor, para o índice poder ser criado. Tudo isso aparece nos avisos.
+- **Auto incremento:** generator + gatilho do Firebird antigo, SERIAL/IDENTITY, AUTO_INCREMENT e
+  INTEGER PRIMARY KEY do SQLite viram o auto incremento do destino. Os ids são copiados como estão
+  (o registro 0 também) e o próximo número continua depois do maior.
+- **Valores padrão:** números, textos, verdadeiro/falso e data/hora atual (`now()`, `GETDATE()`,
+  `'NOW'`, `'TODAY'`, `CURRENT_TIMESTAMP`…) são traduzidos; funções próprias de um banco são
+  deixadas de fora, com aviso.
+- **Nomes:** no PostgreSQL ficam em minúsculas, no Firebird/H2 em maiúsculas; no MySQL, SQL Server
+  e SQLite você escolhe (manter, minúsculas ou MAIÚSCULAS). Espaços e símbolos viram `_`;
+  no Firebird os acentos são removidos.
+- **Dados:** datas do SQLite (texto ou número) são interpretadas; datas inválidas (ex.: `0000-00-00`
+  do MySQL) e textos maiores que a coluna viram NULL/são cortados, com a contagem no relatório. Se
+  o destino recusar uma linha, a tabela para ali, as anteriores ficam gravadas e o relatório mostra
+  a linha recusada; as outras tabelas continuam.
+- **Tabelas que já existem no destino:** a conversão para e avisa, a menos que você marque
+  *Substituir* (apaga e recria, removendo antes as chaves que apontam para elas).
+- **Não convertidos:** views, gatilhos, procedures e generators avulsos (o SQL deles é da linguagem
+  de cada banco). As views aparecem nos avisos para você recriar no destino.
+- O banco de origem nunca é alterado.
+
 ## Como rodar
 
 ### NetBeans

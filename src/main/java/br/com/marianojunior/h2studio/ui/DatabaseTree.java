@@ -477,13 +477,15 @@ public class DatabaseTree extends VBox {
                 nt.setDisable(s.isReadOnly());
                 MenuItem backups = new MenuItem("Backup e restauração…");
                 backups.setOnAction(e -> onDbAction.accept("backups", s));
+                MenuItem conv = new MenuItem("Converter para outro banco…");
+                conv.setOnAction(e -> onDbAction.accept("converter-para", s));
                 MenuItem refresh = new MenuItem("Atualizar");
                 refresh.setOnAction(e -> onRefreshSession.accept(s));
                 MenuItem copyLoc = new MenuItem(s.type().isFile() ? "Copiar caminho do arquivo" : "Copiar endereço");
                 copyLoc.setOnAction(e -> Fx.copy(s.config().location()));
                 MenuItem close = new MenuItem("Desconectar");
                 close.setOnAction(e -> onCloseSession.accept(s));
-                return new ContextMenu(q, nt, backups, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
+                return new ContextMenu(q, nt, backups, conv, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
             }
             MenuItem query = new MenuItem("Nova consulta SQL");
             query.setOnAction(e -> onNewQuery.accept(s));
@@ -509,7 +511,9 @@ public class DatabaseTree extends VBox {
             convert.setOnAction(e -> onDbAction.accept("converter", s));
             javafx.scene.control.Menu tools = new javafx.scene.control.Menu("Utilitários", null, backups, script,
                     new SeparatorMenuItem(), compact, convert);
-            return new ContextMenu(query, newTable, flyway, tools, new SeparatorMenuItem(), refresh, copyPath,
+            MenuItem conv = new MenuItem("Converter para outro banco…");
+            conv.setOnAction(e -> onDbAction.accept("converter-para", s));
+            return new ContextMenu(query, newTable, flyway, tools, conv, new SeparatorMenuItem(), refresh, copyPath,
                     new SeparatorMenuItem(), close);
         }
 
@@ -547,8 +551,11 @@ public class DatabaseTree extends VBox {
                 export.setOnAction(e -> onTableAction.accept("exportar", t));
                 MenuItem query = new MenuItem("Consultar no editor SQL");
                 query.setOnAction(e -> onQueryTable.accept(t));
-                ContextMenu m = new ContextMenu(open, query, new SeparatorMenuItem(), export, new SeparatorMenuItem(), copyName,
-                        copySelect);
+                MenuItem convT = new MenuItem("Copiar para outro banco…");
+                convT.setOnAction(e -> onTableAction.accept("converter-para", t));
+                convT.setDisable(t.table().view());
+                ContextMenu m = new ContextMenu(open, query, new SeparatorMenuItem(), export, convT, new SeparatorMenuItem(),
+                        copyName, copySelect);
                 if (!t.table().view()) {
                     boolean ro = t.session().isReadOnly();
                     MenuItem alter = new MenuItem("Alterar estrutura…");
@@ -570,7 +577,10 @@ public class DatabaseTree extends VBox {
             copySelect.setOnAction(e -> Fx.copy("SELECT * FROM " + t.table().qualified() + ";"));
             MenuItem export = new MenuItem("Exportar (Excel/CSV)…");
             export.setOnAction(e -> onTableAction.accept("exportar", t));
-            ContextMenu m = new ContextMenu(open, sql, new SeparatorMenuItem(), export, new SeparatorMenuItem(), copyName, copySelect);
+            MenuItem convT = new MenuItem("Copiar para outro banco…");
+            convT.setOnAction(e -> onTableAction.accept("converter-para", t));
+            convT.setDisable(t.table().view());
+            ContextMenu m = new ContextMenu(open, sql, new SeparatorMenuItem(), export, convT, new SeparatorMenuItem(), copyName, copySelect);
             if (!t.table().view()) {
                 MenuItem alter = new MenuItem("Alterar estrutura…");
                 alter.setOnAction(e -> onAlterTable.accept(t));

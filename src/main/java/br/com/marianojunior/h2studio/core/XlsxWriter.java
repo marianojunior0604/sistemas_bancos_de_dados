@@ -42,10 +42,13 @@ public final class XlsxWriter implements AutoCloseable {
 
     private final ZipOutputStream zip;
     private final Writer w;
-    private final String sheetName;
+    private String sheetName;
     private int rows;
     private int columns;
     private boolean truncatedText;
+    private boolean started;
+    /** Abas já fechadas: nome, colunas, linhas (para o workbook.xml). */
+    private final java.util.List<Object[]> done = new java.util.ArrayList<>();
 
     public XlsxWriter(Path file, String sheetName) throws IOException {
         OutputStream out = Files.newOutputStream(file);
@@ -55,8 +58,36 @@ public final class XlsxWriter implements AutoCloseable {
         zip.putNextEntry(new ZipEntry("xl/worksheets/sheet1.xml"));
     }
 
+    /**
+     * Fecha a aba atual e começa outra (chame {@code header()} em seguida). O nome deve ser único
+     * na planilha (até 31 caracteres).
+     */
+    public void newSheet(String name) throws IOException {
+        finishSheet();
+        sheetName = safeSheetName(name);
+        rows = 0;
+        columns = 0;
+        zip.putNextEntry(new ZipEntry("xl/worksheets/sheet" + (done.size() + 1) + ".xml"));
+    }
+
+    private void finishSheet() throws IOException {
+        if (!started) {
+            header(java.util.List.of(), null, false); // aba sem cabeçalho: ainda precisa ser XML válido
+        }
+        started = false;
+        w.write("</sheetData>");
+        if (columns > 0 && rows > 0) {
+            w.write("<autoFilter ref=\"A1:" + column(columns - 1) + rows + "\"/>");
+        }
+        w.write("</worksheet>");
+        w.flush();
+        zip.closeEntry();
+        done.add(new Object[]{sheetName, columns, rows});
+    }
+
     /** Escreve o cabeçalho e as larguras das colunas (em caracteres). */
     public void header(List<String> names, int[] widths, boolean show) throws IOException {
+        started = true;
         columns = names.size();
         w.write("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
         w.write("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
@@ -207,38 +238,50 @@ public final class XlsxWriter implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
-        w.write("</sheetData>");
-        if (columns > 0 && rows > 0) {
-            w.write("<autoFilter ref=\"A1:" + column(columns - 1) + rows + "\"/>");
+        finishSheet();
+        StringBuilder overrides = new StringBuilder();
+        StringBuilder sheets = new StringBuilder();
+        StringBuilder filters = new StringBuilder();
+        StringBuilder rels = new StringBuilder();
+        for (int i = 0; i < done.size(); i++) {
+            String name = (String) done.get(i)[0];
+            int cols = (Integer) done.get(i)[1];
+            int rws = (Integer) done.get(i)[2];
+            overrides.append("<Override PartName=\"/xl/worksheets/sheet").append(i + 1)
+                    .append(".xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>");
+            sheets.append("<sheet name=\"").append(xml(name)).append("\" sheetId=\"").append(i + 1)
+                    .append("\" r:id=\"rId").append(i + 1).append("\"/>");
+            if (cols > 0 && rws > 0) {
+                filters.append("<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"").append(i)
+                        .append("\" hidden=\"1\">'").append(xml(name.replace("'", "''"))).append("'!$A$1:$")
+                        .append(column(cols - 1)).append("$").append(rws).append("</definedName>");
+            }
+            rels.append("<Relationship Id=\"rId").append(i + 1)
+                    .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet")
+                    .append(i + 1).append(".xml\"/>");
         }
-        w.write("</worksheet>");
-        w.flush();
-        zip.closeEntry();
         entry("[Content_Types].xml", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
                 + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
                 + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
                 + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
                 + "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
-                + "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+                + overrides
                 + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
                 + "</Types>");
         entry("_rels/.rels", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
                 + "</Relationships>");
-        String filter = columns > 0 && rows > 0
-                ? "<definedNames><definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'"
-                + xml(sheetName.replace("'", "''")) + "'!$A$1:$" + column(columns - 1) + "$" + rows + "</definedName></definedNames>"
-                : "";
+        String filter = filters.length() > 0 ? "<definedNames>" + filters + "</definedNames>" : "";
         entry("xl/workbook.xml", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
                 + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
                 + "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
-                + "<sheets><sheet name=\"" + xml(sheetName) + "\" sheetId=\"1\" r:id=\"rId1\"/></sheets>" + filter
+                + "<sheets>" + sheets + "</sheets>" + filter
                 + "</workbook>");
         entry("xl/_rels/workbook.xml.rels", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
-                + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+                + rels
+                + "<Relationship Id=\"rIdStyles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
                 + "</Relationships>");
         entry("xl/styles.xml", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
                 + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"

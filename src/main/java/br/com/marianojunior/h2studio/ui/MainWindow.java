@@ -53,7 +53,7 @@ import javafx.stage.Stage;
 public class MainWindow {
 
     public static final String CSS = MainWindow.class.getResource("app.css").toExternalForm();
-    public static final String VERSION = "1.6.0";
+    public static final String VERSION = "1.7.0";
 
     private final Stage stage;
     private final HostServices hostServices;
@@ -116,12 +116,14 @@ public class MainWindow {
                         t.table().schema().isEmpty() ? t.table().name() : t.table().schema() + "." + t.table().name(),
                         t.table().name(), null, ExportAction.allOf(t.session().type(), t.table().schema(), t.table().name()));
                 case "importar" -> importCsv(t.session(), t.table());
+                case "converter-para" -> showConvert(t.session(), t.table().schema(), t.table().name());
                 default -> { }
             }
         });
         tree.setOnDbAction((action, s) -> {
             switch (action) {
                 case "backups" -> showBackups(s);
+                case "converter-para" -> showConvert(s, null, null);
                 case "compactar" -> compactDatabase(s);
                 case "converter" -> convertDatabase(s);
                 case "script" -> dumpScript(s);
@@ -294,9 +296,17 @@ public class MainWindow {
                 openDesigner(s, sch == null ? "" : sch, null);
             }
         });
+        MenuItem convertTo = new MenuItem("Converter para outro banco…");
+        convertTo.setOnAction(e -> {
+            DbSession s = sessionForAnyDb();
+            if (s != null) {
+                showConvert(s, null, null);
+            }
+        });
         MenuItem sqlHistory = new MenuItem("Histórico de SQL…");
         sqlHistory.setOnAction(e -> showSqlHistory());
-        Menu tools = new Menu("Ferramentas", null, newTable, flywayItem, sqlHistory, new SeparatorMenuItem(), backupNow, backupFolder, autoBackup,
+        Menu tools = new Menu("Ferramentas", null, newTable, flywayItem, sqlHistory, new SeparatorMenuItem(), convertTo,
+                new SeparatorMenuItem(), backupNow, backupFolder, autoBackup,
                 new SeparatorMenuItem(), scriptItem, compactItem, convertItem,
                 new SeparatorMenuItem(), drivers);
 
@@ -732,6 +742,35 @@ public class MainWindow {
                 + "\n\nPara gravar, cancele e use Salvar (Ctrl+S) ou Commit em cada aba."));
         a.getDialogPane().getStylesheets().add(CSS);
         return a.showAndWait().filter(b -> b == discard).isPresent();
+    }
+
+    // =====================================================================
+    // Converter entre bancos (parte 7)
+    // =====================================================================
+
+    private void showConvert(DbSession s, String schema, String table) {
+        new ConvertDbDialog(stage, s, schema, table, new ConvertDbDialog.Host() {
+            @Override
+            public List<DbSession> sessions() {
+                return new ArrayList<>(sessions);
+            }
+
+            @Override
+            public void openConfig(br.com.marianojunior.h2studio.core.ConnectionConfig cfg) {
+                open(cfg);
+            }
+
+            @Override
+            public void refresh(DbSession d) {
+                tree.load(d);
+                for (Tab t : tabs.getTabs()) {
+                    if (t instanceof SqlEditorTab q && q.session() == d) {
+                        q.reloadCatalog();
+                    }
+                }
+                setStatus("Conversão para " + d.displayName() + " concluída.", false);
+            }
+        }).showAndWait();
     }
 
     // =====================================================================
@@ -1317,11 +1356,10 @@ public class MainWindow {
         if (s == null) {
             Fx.info(stage, "Selecione um banco", "Selecione um banco na árvore à esquerda.");
         } else if (!s.isH2()) {
-            Fx.info(stage, "Disponível só para H2 por enquanto",
-                    s.displayName() + " é " + s.type().label() + ". Nesta versão os outros bancos podem ser "
-                    + "conectados, navegados (estrutura, índices, chaves e DDL), consultados e editados na grade, "
-                    + "usados no editor SQL, exportados para Excel/CSV, ter a estrutura alterada no designer e ter "
-                    + "backup e restauração. As demais ferramentas para eles chegam nas próximas partes.");
+            Fx.info(stage, "Ferramenta própria do H2",
+                    s.displayName() + " é " + s.type().label() + ". Esta ferramenta é dos arquivos H2 (script do "
+                    + "RUNSCRIPT, compactar, trocar a versão do H2, Flyway). Para os outros bancos use Backup e "
+                    + "restauração, Converter para outro banco e o editor SQL.");
             return null;
         }
         return s;
