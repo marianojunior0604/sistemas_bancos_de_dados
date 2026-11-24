@@ -226,3 +226,4 @@
 .row-action { -fx-padding: 2 8; }
 .table-row-cell.flyway-failed { -fx-background-color: #ffeef0; }
 .table-row-cell.flyway-failed .table-cell { -fx-text-fill: #cf222e; }
+.warn-text { -fx-text-fill: #b45309; -fx-font-size: 12px; }

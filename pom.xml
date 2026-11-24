@@ -6,7 +6,7 @@
 
     <groupId>br.com.marianojunior</groupId>
     <artifactId>h2studio</artifactId>
-    <version>1.4.0</version>
+    <version>1.5.0</version>
     <packaging>jar</packaging>
     <name>H2 Studio</name>
     <description>Gerenciador visual de bancos de dados H2 (1.4.x, 2.1.x e 2.2+)</description>

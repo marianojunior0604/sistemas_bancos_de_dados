@@ -472,13 +472,15 @@ public class DatabaseTree extends VBox {
             if (!s.isH2()) {
                 MenuItem q = new MenuItem("Nova consulta SQL");
                 q.setOnAction(e -> onNewQuery.accept(s));
+                MenuItem backups = new MenuItem("Backup e restauração…");
+                backups.setOnAction(e -> onDbAction.accept("backups", s));
                 MenuItem refresh = new MenuItem("Atualizar");
                 refresh.setOnAction(e -> onRefreshSession.accept(s));
                 MenuItem copyLoc = new MenuItem(s.type().isFile() ? "Copiar caminho do arquivo" : "Copiar endereço");
                 copyLoc.setOnAction(e -> Fx.copy(s.config().location()));
                 MenuItem close = new MenuItem("Desconectar");
                 close.setOnAction(e -> onCloseSession.accept(s));
-                return new ContextMenu(q, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
+                return new ContextMenu(q, backups, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
             }
             MenuItem query = new MenuItem("Nova consulta SQL");
             query.setOnAction(e -> onNewQuery.accept(s));

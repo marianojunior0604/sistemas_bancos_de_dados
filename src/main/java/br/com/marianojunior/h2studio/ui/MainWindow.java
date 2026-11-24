@@ -53,7 +53,7 @@ import javafx.stage.Stage;
 public class MainWindow {
 
     public static final String CSS = MainWindow.class.getResource("app.css").toExternalForm();
-    public static final String VERSION = "1.4.0";
+    public static final String VERSION = "1.5.0";
 
     private final Stage stage;
     private final HostServices hostServices;
@@ -244,7 +244,7 @@ public class MainWindow {
         backupNow.setOnAction(e -> backupNow());
         MenuItem backupFolder = new MenuItem("Backups e restauração…");
         backupFolder.setOnAction(e -> {
-            DbSession s = sessionForTools();
+            DbSession s = sessionForAnyDb();
             if (s != null) {
                 showBackups(s);
             }
@@ -298,7 +298,7 @@ public class MainWindow {
                 + "sem alterar o formato do arquivo.\n"
                 + "Outros bancos (Arquivo › Conectar, Ctrl+Shift+O): PostgreSQL, MySQL, MariaDB, Firebird 2.5 a 5, "
                 + "SQL Server e SQLite — estrutura (tabelas, colunas, índices, chaves e DDL), grade com "
-                + "paginação, busca, filtro, ordenação e edição, editor SQL e exportação Excel/CSV. O driver de cada um é baixado "
+                + "paginação, busca, filtro, ordenação e edição, editor SQL, exportação Excel/CSV e backup/restauração com as ferramentas de cada banco. O driver de cada um é baixado "
                 + "na primeira conexão.\n\n"
                 + "Atalhos gerais: Ctrl+O abrir · F5 atualizar · Ctrl+F buscar · Ctrl+T filtrar tabelas · "
                 + "Ctrl+W fechar aba · Ctrl+C copiar células\n\n"
@@ -959,13 +959,118 @@ public class MainWindow {
             Fx.error(stage, title + ": não concluído", e instanceof DbOpenException de && de.reason() == DbOpenException.Reason.LOCKED
                     ? "O banco está aberto por outro programa (provavelmente o sistema). Feche-o e tente de novo."
                     : Fx.shortMessage(e), e);
-            if (java.nio.file.Files.isRegularFile(original.file()) && original.getCopyOf() == null) {
+            if (!original.isH2() || java.nio.file.Files.isRegularFile(original.file()) && original.getCopyOf() == null) {
                 runOpen(original, () -> factory.open(original));
             }
         });
     }
 
+    /**
+     * Restaurar um backup de outro banco: como banco novo (padrão, não mexe no atual) ou
+     * substituindo o atual (faz antes um backup de segurança e fecha as abas deste banco).
+     */
+    private void restoreServer(DbSession s, ServerBackupsDialog.RestoreChoice choice) {
+        var type = s.type();
+        String db = choice.database() == null || choice.database().isBlank() ? s.config().getDatabase() : choice.database();
+        String backupName = java.nio.file.Path.of(choice.backup().replace('\\', '/')).getFileName().toString();
+        boolean canReplace = type != br.com.marianojunior.h2studio.core.DbType.SQLSERVER;
+        boolean fileBased = type == br.com.marianojunior.h2studio.core.DbType.SQLITE;
+
+        javafx.scene.control.ToggleGroup g = new javafx.scene.control.ToggleGroup();
+        javafx.scene.control.RadioButton asNew = new javafx.scene.control.RadioButton(
+                fileBased ? "Restaurar em outro arquivo:" : type.isFirebird() ? "Restaurar como banco novo (caminho no servidor):"
+                        : "Restaurar como banco novo:");
+        asNew.setToggleGroup(g);
+        asNew.setSelected(true);
+        javafx.scene.control.TextField newName = new javafx.scene.control.TextField(fileBased
+                ? s.config().getDatabase().replaceAll("(?i)(\\.[a-z0-9]+)?$", "_restaurado$1")
+                : br.com.marianojunior.h2studio.core.ServerBackupService.suggestNewName(type, db));
+        newName.setPrefColumnCount(40);
+        newName.disableProperty().bind(asNew.selectedProperty().not());
+        javafx.scene.control.RadioButton replace = new javafx.scene.control.RadioButton("Substituir o banco atual ("
+                + (fileBased ? java.nio.file.Path.of(db).getFileName() : db) + ")");
+        replace.setToggleGroup(g);
+        replace.setDisable(!canReplace);
+        String replaceInfo = !canReplace
+                ? "No SQL Server a restauração é feita como banco novo (substituir o banco em uso exigiria desconectar "
+                + "todos os usuários). Depois de conferir, troque o banco do sistema ou renomeie pelo SSMS."
+                : "Substituir: tudo o que foi gravado depois deste backup se perde. Antes, o H2 Studio faz um backup "
+                + "de segurança do banco atual (\"antes-de-restaurar\") e fecha as abas deste banco. O sistema que usa "
+                + "o banco deve estar FECHADO."
+                + (type == br.com.marianojunior.h2studio.core.DbType.MYSQL || type == br.com.marianojunior.h2studio.core.DbType.MARIADB
+                ? "\nNo MySQL a restauração não é uma transação: se parar no meio, use o backup de segurança." : "")
+                + (type.isFirebird() ? "\nO gbak recusa substituir se houver alguém conectado ao banco." : "");
+        Label warn = Fx.wrapLabel(replaceInfo);
+        warn.getStyleClass().add(canReplace ? "warn-text" : "help");
+        VBox box = new VBox(8, Fx.wrapLabel("Backup: " + backupName), asNew, newName, replace, warn);
+        box.setPrefWidth(620);
+        ButtonType go = new ButtonType("Restaurar", ButtonBar.ButtonData.OK_DONE);
+        Alert a = new Alert(Alert.AlertType.CONFIRMATION, "", go, Fx.CANCEL);
+        a.initOwner(stage);
+        a.setTitle("H2 Studio");
+        a.setHeaderText("Restaurar backup de " + s.displayName());
+        a.getDialogPane().setContent(box);
+        a.getDialogPane().getStylesheets().add(CSS);
+        if (a.showAndWait().filter(b -> b == go).isEmpty()) {
+            return;
+        }
+        if (asNew.isSelected()) {
+            String target = newName.getText().trim();
+            if (target.isEmpty() || (!fileBased && !type.isFirebird() && !target.matches("[A-Za-z_][A-Za-z0-9_$]*"))) {
+                Fx.error(stage, "Nome inválido", "Use só letras, números e _ no nome do banco novo (sem espaços).", null);
+                return;
+            }
+            if (fileBased && java.nio.file.Files.exists(java.nio.file.Path.of(target))) {
+                Fx.error(stage, "O arquivo já existe", target + "\n\nEscolha outro nome para não sobrescrever.", null);
+                return;
+            }
+            TaskDialog.run(stage, "Restaurando backup", true, ctx -> {
+                ctx.progress(-1);
+                br.com.marianojunior.h2studio.core.ServerBackupService.restore(s, choice.backup(), db, target, false,
+                        br.com.marianojunior.h2studio.core.ServerBackupService.silent(ctx::status, ctx::cancelled));
+                return target;
+            }, t -> {
+                ButtonType open = new ButtonType("Abrir agora", ButtonBar.ButtonData.OK_DONE);
+                Alert done = new Alert(Alert.AlertType.INFORMATION, "", open, new ButtonType("Fechar",
+                        ButtonBar.ButtonData.CANCEL_CLOSE));
+                done.initOwner(stage);
+                done.setTitle("H2 Studio");
+                done.setHeaderText("Backup restaurado em " + t);
+                done.getDialogPane().getStylesheets().add(CSS);
+                if (done.showAndWait().filter(b -> b == open).isPresent()) {
+                    ConnectionConfig nc = s.config().copy();
+                    nc.setId(null);
+                    nc.setDatabase(t);
+                    nc.setName(fileBased ? java.nio.file.Path.of(t).getFileName().toString()
+                            : (type.isFirebird() ? java.nio.file.Path.of(t.replace('\\', '/')).getFileName().toString() : t)
+                            + " @ " + s.config().getHost());
+                    open(nc);
+                }
+            }, err -> ServerBackupsDialog.showError(stage, "Não foi possível restaurar", err));
+            return;
+        }
+        // substituir: backup de segurança primeiro
+        TaskDialog.run(stage, "Backup de segurança antes de restaurar", true, ctx -> {
+            ctx.progress(-1);
+            return br.com.marianojunior.h2studio.core.ServerBackupService.backup(s, db, null, "antes-de-restaurar",
+                    br.com.marianojunior.h2studio.core.ServerBackupService.silent(ctx::status, ctx::cancelled));
+        }, safety -> {
+            ConnectionConfig cfg = s.config().copy();
+            runWithDatabaseClosed(s, "Restaurando backup", ctx -> {
+                ctx.progress(-1);
+                br.com.marianojunior.h2studio.core.ServerBackupService.restore(s, choice.backup(), db, db, true,
+                        br.com.marianojunior.h2studio.core.ServerBackupService.silent(ctx::status, ctx::cancelled));
+                return safety;
+            }, r -> cfg, r -> Fx.info(stage, "Backup restaurado", "O banco " + db + " foi restaurado a partir de "
+                    + backupName + ".\n\nO estado anterior foi guardado em:\n" + r));
+        }, err -> ServerBackupsDialog.showError(stage, "O backup de segurança falhou; nada foi restaurado", err));
+    }
+
     private void showBackups(DbSession s) {
+        if (!s.isH2()) {
+            new ServerBackupsDialog(stage, s).showAndWait().ifPresent(choice -> restoreServer(s, choice));
+            return;
+        }
         Optional<Path> chosen = new BackupsDialog(stage, s).showAndWait();
         if (chosen.isEmpty()) {
             return;
@@ -1181,16 +1286,23 @@ public class MainWindow {
             Fx.info(stage, "Disponível só para H2 por enquanto",
                     s.displayName() + " é " + s.type().label() + ". Nesta versão os outros bancos podem ser "
                     + "conectados, navegados (estrutura, índices, chaves e DDL), consultados e editados na grade, "
-                    + "usados no editor SQL e exportados para Excel/CSV. Backups e demais ferramentas para eles "
-                    + "chegam nas próximas partes.");
+                    + "usados no editor SQL, exportados para Excel/CSV e ter backup e restauração. As demais "
+                    + "ferramentas para eles chegam nas próximas partes.");
             return null;
         }
         return s;
     }
 
     private void backupNow() {
-        DbSession s = sessionForTools();
+        DbSession s = sessionForAnyDb();
         if (s == null) {
+            return;
+        }
+        if (!s.isH2()) {
+            ServerBackupsDialog.runBackup(stage, s, s.config().getDatabase(), null, p -> {
+                setStatus("Backup criado: " + p, false);
+                Fx.info(stage, "Backup criado", p);
+            });
             return;
         }
         setStatus("Fazendo backup de " + s.displayName() + "…", true);

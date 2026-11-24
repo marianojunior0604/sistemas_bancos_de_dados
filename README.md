@@ -3,7 +3,7 @@
 Gerenciador visual de bancos de dados **H2**, no estilo MySQL Workbench / phpMyAdmin,
 feito em Java 21 + JavaFX. A partir da versão 1.1 também conecta em **PostgreSQL, MySQL,
 MariaDB, Firebird (2.5 a 5), SQL Server e SQLite** (estrutura, consulta e edição dos dados e
-editor SQL).
+editor SQL, backup e restauração).
 
 ## Etapa 1 — o que já funciona
 
@@ -255,8 +255,8 @@ pergunta e baixa o jar do **Maven Central**, confere o SHA-1 publicado e guarda 
   comando: `SHOW CREATE TABLE` no MySQL, `sqlite_master` no SQLite e a definição das views. Nos
   outros casos é montado pelos metadados e marcado como aproximado.
 - A aba **Dados** é a grade (veja a parte 2 abaixo).
-- Importação de CSV, backups, designer de tabelas e as demais ferramentas continuam só para H2
-  por enquanto; para outro banco, o programa avisa.
+- Importação de CSV, designer de tabelas, compactar/converter e o script SQL do banco continuam
+  só para H2 por enquanto; para outro banco, o programa avisa.
 
 ## Multi-banco, parte 2 — grade com paginação e filtros (versão 1.2)
 
@@ -327,6 +327,34 @@ rascunho salvo, abrir/salvar `.sql` e exportar o resultado.
   DELETE/UPDATE sem WHERE e de DROP continua valendo.
 - Procedures que devolvem contagens antes das linhas (SQL Server, MySQL) mostram o resultado.
 
+## Multi-banco, parte 5 — backup e restauração (versão 1.5)
+
+**Ferramentas › Backups e restauração…**, **Fazer backup agora** ou o menu da conexão na árvore.
+Cada banco usa a ferramenta própria:
+
+| Banco | Backup | Restauração | Arquivo |
+|---|---|---|---|
+| PostgreSQL | `pg_dump` (formato custom) | `pg_restore` numa transação só (ou `psql` para .sql) | `.backup` neste computador |
+| MySQL / MariaDB | `mysqldump --single-transaction` + rotinas, gatilhos e eventos | `mysql` | `.sql.gz` neste computador |
+| Firebird | `gbak -b` pela rede | `gbak -c` (novo) / `-rep` (substituir) | `.fbk` neste computador |
+| SQL Server | `BACKUP DATABASE … COPY_ONLY` | `RESTORE DATABASE` como banco novo | `.bak` **no servidor** |
+| SQLite | `VACUUM INTO` (sem ferramenta externa) | cópia do arquivo | `.sqlite` neste computador |
+
+- **Onde ficam:** `%USERPROFILE%\.h2studio\backups\<tipo>-<banco>@<servidor>-xxxx\`. Também dá
+  para *Salvar backup em…* qualquer pasta e *Restaurar de outro arquivo…*.
+- **Ferramentas:** o programa procura no PATH e nas pastas padrão dos instaladores (PostgreSQL\NN\bin,
+  MySQL Server\bin, MariaDB, XAMPP, Firebird_N_N). Se não achar, o diálogo mostra *Indicar onde
+  está…* e guarda o caminho. Avisa quando o pg_dump é mais antigo que o servidor.
+- **Restaurar como banco novo** (padrão): cria o banco (ou outro arquivo no SQLite/Firebird) e
+  oferece abrir em seguida. Nunca sobrescreve um banco que já existe.
+- **Substituir o banco atual:** antes faz um backup de segurança (`…_antes-de-restaurar`), fecha
+  as abas do banco, restaura e reabre. No PostgreSQL é tudo ou nada. No MySQL não há transação:
+  se parar no meio, use o backup de segurança. O gbak recusa substituir com gente conectada. No
+  SQL Server só há a opção de banco novo.
+- **Senhas** não vão na linha de comando: PGPASSWORD / ISC_PASSWORD no ambiente do processo e,
+  no MySQL, um arquivo de opções temporário apagado no fim.
+- **Cancelar** interrompe a ferramenta; arquivo pela metade não fica na pasta.
+
 ## Como rodar
 
 ### NetBeans
@@ -373,4 +401,3 @@ ui/
   ServerConnectionDialog, DriverSetup   conexão com os outros bancos e download do driver
 ```
 
-# sistemas_bancos_de_dados
