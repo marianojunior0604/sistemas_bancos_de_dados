@@ -1,0 +1,7 @@
+target/
+dist/
+nb-configuration.xml
+*.mv.db
+*.trace.db
+*.lock.db
+*.h2.db
