@@ -4,11 +4,11 @@
 ;  Normalmente é chamado pelo empacotar.ps1, que gera antes a pasta
 ;  dist\H2 Studio (programa + Java embutido) e passa a versão do pom.xml.
 ;  Para compilar à mão:
-;    ISCC.exe /DAppVersion=1.8.0 instalador\h2studio.iss
+;    ISCC.exe /DAppVersion=1.10.0 instalador\h2studio.iss
 ; =====================================================================
 
 #ifndef AppVersion
-  #define AppVersion "1.8.0"
+  #define AppVersion "1.10.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist\H2 Studio"
@@ -72,12 +72,14 @@ Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 [CustomMessages]
 ptbr.AssocGroup=Abrir bancos com dois cliques:
 ptbr.AssocSqlite=Arquivos SQLite (.sqlite, .sqlite3)
+ptbr.AssocFbk=Backups do Firebird (.fbk): restaurar como banco
 ptbr.FileTypeName=Banco de dados (H2 Studio)
 ptbr.RemoveData=Apagar também os dados do H2 Studio deste usuário?%n%n%1%n%nLá ficam as conexões salvas, o histórico de SQL, os drivers baixados e os BACKUPS feitos pelo programa.%n%nEscolha "Não" para manter (por exemplo, se for reinstalar).
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "assocsqlite"; Description: "{cm:AssocSqlite}"; GroupDescription: "{cm:AssocGroup}"; Flags: unchecked
+Name: "assocfbk"; Description: "{cm:AssocFbk}"; GroupDescription: "{cm:AssocGroup}"; Flags: unchecked
 
 [InstallDelete]
 ; numa atualização, tira o Java e os jars da versão anterior antes de copiar os novos
@@ -101,14 +103,20 @@ Root: HKA; Subkey: "Software\Classes\{#ProgId}\shell\open\command"; ValueType: s
 Root: HKA; Subkey: "Software\Classes\.db\OpenWithProgids"; ValueType: string; ValueName: "{#ProgId}"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\.sqlite\OpenWithProgids"; ValueType: string; ValueName: "{#ProgId}"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\.sqlite3\OpenWithProgids"; ValueType: string; ValueName: "{#ProgId}"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.fbk\OpenWithProgids"; ValueType: string; ValueName: "{#ProgId}"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.gbk\OpenWithProgids"; ValueType: string; ValueName: "{#ProgId}"; ValueData: ""; Flags: uninsdeletevalue
 ; opcional: dois cliques em .sqlite/.sqlite3 abrem no H2 Studio
 Root: HKA; Subkey: "Software\Classes\.sqlite"; ValueType: string; ValueName: ""; ValueData: "{#ProgId}"; Tasks: assocsqlite; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\.sqlite3"; ValueType: string; ValueName: ""; ValueData: "{#ProgId}"; Tasks: assocsqlite; Flags: uninsdeletevalue
+; opcional: dois cliques em .fbk abrem a restauração no H2 Studio
+Root: HKA; Subkey: "Software\Classes\.fbk"; ValueType: string; ValueName: ""; ValueData: "{#ProgId}"; Tasks: assocfbk; Flags: uninsdeletevalue
 ; o programa aparece na lista do "Abrir com"
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".db"; ValueData: ""
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".sqlite"; ValueData: ""
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".sqlite3"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".fbk"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".gbk"; ValueData: ""
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""
 
 [Run]

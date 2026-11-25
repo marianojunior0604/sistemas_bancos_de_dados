@@ -46,7 +46,8 @@ public class H2StudioApp extends Application {
     private static void openAll(MainWindow w, List<String> args) {
         for (String arg : args) {
             Path p = Path.of(arg);
-            if (Files.isRegularFile(p) && (H2FileInspector.isH2File(p) || isSqlite(p))) {
+            if (Files.isRegularFile(p) && (H2FileInspector.isH2File(p) || isSqlite(p)
+                    || br.com.marianojunior.h2studio.core.ServerBackupService.isFirebirdBackup(p))) {
                 w.openFile(p);
             }
         }

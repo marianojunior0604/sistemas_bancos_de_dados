@@ -63,6 +63,8 @@ public class DatabaseTree extends VBox {
     private Consumer<DbSession> onNewQuery = s -> { };
     private Consumer<TableNode> onQueryTable = t -> { };
     private java.util.function.BiConsumer<DbSession, String> onNewTable = (s, sc) -> { };
+    /** Importar planilha/CSV como tabela nova no schema (null = o da conexão). */
+    private java.util.function.BiConsumer<DbSession, String> onImportFile = (s, sc) -> { };
     private Consumer<TableNode> onAlterTable = t -> { };
     private Consumer<TableNode> onDropTable = t -> { };
     private Consumer<DbSession> onFlyway = s -> { };
@@ -120,6 +122,10 @@ public class DatabaseTree extends VBox {
 
     public void setOnQueryTable(Consumer<TableNode> c) {
         onQueryTable = c;
+    }
+
+    public void setOnImportFile(java.util.function.BiConsumer<DbSession, String> c) {
+        onImportFile = c;
     }
 
     public void setOnNewTable(java.util.function.BiConsumer<DbSession, String> c) {
@@ -475,6 +481,8 @@ public class DatabaseTree extends VBox {
                 MenuItem nt = new MenuItem("Nova tabela…");
                 nt.setOnAction(e -> onNewTable.accept(s, null)); // null: schema/banco em uso pela conexão
                 nt.setDisable(s.isReadOnly());
+                MenuItem impF = new MenuItem("Importar planilha ou CSV…");
+                impF.setOnAction(e -> onImportFile.accept(s, null));
                 MenuItem backups = new MenuItem("Backup e restauração…");
                 backups.setOnAction(e -> onDbAction.accept("backups", s));
                 MenuItem conv = new MenuItem("Converter para outro banco…");
@@ -485,13 +493,15 @@ public class DatabaseTree extends VBox {
                 copyLoc.setOnAction(e -> Fx.copy(s.config().location()));
                 MenuItem close = new MenuItem("Desconectar");
                 close.setOnAction(e -> onCloseSession.accept(s));
-                return new ContextMenu(q, nt, backups, conv, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
+                return new ContextMenu(q, nt, impF, backups, conv, new SeparatorMenuItem(), refresh, copyLoc, new SeparatorMenuItem(), close);
             }
             MenuItem query = new MenuItem("Nova consulta SQL");
             query.setOnAction(e -> onNewQuery.accept(s));
             MenuItem newTable = new MenuItem("Nova tabela…");
             newTable.setOnAction(e -> onNewTable.accept(s, defaultSchema(s)));
             newTable.setDisable(s.isReadOnly());
+            MenuItem impF = new MenuItem("Importar planilha ou CSV…");
+            impF.setOnAction(e -> onImportFile.accept(s, defaultSchema(s)));
             MenuItem flyway = new MenuItem("Histórico do Flyway…");
             flyway.setOnAction(e -> onFlyway.accept(s));
             MenuItem refresh = new MenuItem("Atualizar");
@@ -513,7 +523,7 @@ public class DatabaseTree extends VBox {
                     new SeparatorMenuItem(), compact, convert);
             MenuItem conv = new MenuItem("Converter para outro banco…");
             conv.setOnAction(e -> onDbAction.accept("converter-para", s));
-            return new ContextMenu(query, newTable, flyway, tools, conv, new SeparatorMenuItem(), refresh, copyPath,
+            return new ContextMenu(query, newTable, impF, flyway, tools, conv, new SeparatorMenuItem(), refresh, copyPath,
                     new SeparatorMenuItem(), close);
         }
 
@@ -526,6 +536,8 @@ public class DatabaseTree extends VBox {
                 nt.setDisable(sn.session().isReadOnly());
                 ContextMenu m = connMenu(sn.session());
                 m.getItems().removeIf(i -> "Nova tabela…".equals(i.getText()));
+                m.getItems().stream().filter(i -> "Importar planilha ou CSV…".equals(i.getText()))
+                        .forEach(i -> i.setOnAction(e -> onImportFile.accept(sn.session(), sn.schema())));
                 m.getItems().addAll(0, List.of(nt, copy, new SeparatorMenuItem()));
                 return m;
             }
@@ -533,6 +545,8 @@ public class DatabaseTree extends VBox {
             newTable.setOnAction(e -> onNewTable.accept(sn.session(), sn.schema()));
             newTable.setDisable(sn.session().isReadOnly());
             ContextMenu m = connMenu(sn.session());
+            m.getItems().stream().filter(i -> "Importar planilha ou CSV…".equals(i.getText()))
+                    .forEach(i -> i.setOnAction(e -> onImportFile.accept(sn.session(), sn.schema())));
             m.getItems().add(0, newTable);
             m.getItems().add(1, new SeparatorMenuItem());
             return m;
@@ -564,6 +578,10 @@ public class DatabaseTree extends VBox {
                     MenuItem drop = new MenuItem("Excluir tabela…");
                     drop.setOnAction(e -> onDropTable.accept(t));
                     drop.setDisable(ro);
+                    MenuItem imp = new MenuItem("Importar CSV ou planilha…");
+                    imp.setOnAction(e -> onTableAction.accept("importar", t));
+                    imp.setDisable(ro);
+                    m.getItems().add(m.getItems().indexOf(export) + 1, imp);
                     m.getItems().addAll(2, List.of(alter, new SeparatorMenuItem()));
                     m.getItems().addAll(new SeparatorMenuItem(), drop);
                 }
@@ -588,7 +606,7 @@ public class DatabaseTree extends VBox {
                 drop.setOnAction(e -> onDropTable.accept(t));
                 boolean ro = t.session().isReadOnly();
                 drop.setDisable(ro);
-                MenuItem imp = new MenuItem("Importar CSV…");
+                MenuItem imp = new MenuItem("Importar CSV ou planilha…");
                 imp.setOnAction(e -> onTableAction.accept("importar", t));
                 imp.setDisable(t.session().isReadOnly() || t.session().isCopy());
                 m.getItems().add(m.getItems().indexOf(export) + 1, imp);

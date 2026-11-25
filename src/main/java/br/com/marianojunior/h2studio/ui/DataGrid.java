@@ -92,7 +92,7 @@ public class DataGrid extends BorderPane {
     private final Button discardButton = new Button("Descartar");
     private final Label pendingLabel = new Label();
     private final Label readOnlyLabel = new Label();
-    private final Button importCsvButton = new Button("Importar CSV…");
+    private final Button importCsvButton = new Button("Importar…");
 
     private long offset;
     private long total;
@@ -276,10 +276,6 @@ public class DataGrid extends BorderPane {
             n.setManaged(show || n instanceof Region && !(n instanceof javafx.scene.control.Control));
         }
         readOnlyLabel.setText(reason == null ? "" : reason);
-        if (!session.isH2()) {
-            importCsvButton.setVisible(false); // importação de CSV ainda é só do H2
-            importCsvButton.setManaged(false);
-        }
         if (useRowId) {
             readOnlyLabel.setText("Tabela sem chave primária: as linhas são identificadas pelo _ROWID_ interno do H2.");
             readOnlyLabel.setVisible(true);
@@ -298,7 +294,7 @@ public class DataGrid extends BorderPane {
         del.setTooltip(new Tooltip("Marcar as linhas selecionadas para exclusão (Delete)"));
         del.setOnAction(e -> deleteRows());
         Button importCsv = importCsvButton;
-        importCsv.setTooltip(new Tooltip("Adicionar ou substituir linhas a partir de um arquivo CSV"));
+        importCsv.setTooltip(new Tooltip("Adicionar ou substituir linhas a partir de um CSV ou de uma planilha .xlsx"));
         importCsv.setOnAction(e -> confirmLeave(this::importCsv));
         Button setNull = new Button("NULL");
         setNull.setTooltip(new Tooltip("Definir NULL nas células selecionadas (Shift+Delete)"));
@@ -335,7 +331,7 @@ public class DataGrid extends BorderPane {
     }
 
     private void importCsv() {
-        new CsvImportDialog(window(), session, table).showAndWait().ifPresent(r -> {
+        new ImportDialog(window(), session, table.schema(), table).showAndWait().ifPresent(r -> {
             showOk(String.format("Importadas %,d linha(s)", r.inserted()).replace(',', '.')
                     + (r.deleted() > 0 ? String.format(" (%,d apagadas antes)", r.deleted()).replace(',', '.') : "") + ".");
             doReload();

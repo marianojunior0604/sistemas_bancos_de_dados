@@ -53,7 +53,7 @@ import javafx.stage.Stage;
 public class MainWindow {
 
     public static final String CSS = MainWindow.class.getResource("app.css").toExternalForm();
-    public static final String VERSION = "1.8.0";
+    public static final String VERSION = "1.10.0";
 
     private final Stage stage;
     private final HostServices hostServices;
@@ -100,6 +100,7 @@ public class MainWindow {
 
         tree.setOnOpenTable(t -> openTable(t.session(), t.table()));
         tree.setOnNewQuery(s -> openSqlEditor(s, null, false));
+        tree.setOnImportFile(this::importFile);
         tree.setOnNewTable((s, schema) -> {
             String sch = schema;
             if (sch == null) {
@@ -199,6 +200,8 @@ public class MainWindow {
         MenuItem connect = new MenuItem("Conectar a servidor ou SQLite…");
         connect.setAccelerator(new KeyCodeCombination(KeyCode.O, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN));
         connect.setOnAction(e -> connectDialog(null));
+        MenuItem fbk = new MenuItem("Restaurar backup do Firebird (.fbk)…");
+        fbk.setOnAction(e -> restoreFbk(null));
         MenuItem newQuery = new MenuItem("Nova consulta SQL");
         newQuery.setAccelerator(new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN));
         newQuery.setOnAction(e -> newQuery());
@@ -222,7 +225,7 @@ public class MainWindow {
                 stage.close();
             }
         });
-        Menu file = new Menu("Arquivo", null, open, connect, recentMenu, newQuery, new SeparatorMenuItem(), closeConn, closeAll,
+        Menu file = new Menu("Arquivo", null, open, connect, fbk, recentMenu, newQuery, new SeparatorMenuItem(), closeConn, closeAll,
                 new SeparatorMenuItem(), exit);
 
         MenuItem refresh = new MenuItem("Atualizar");
@@ -296,6 +299,13 @@ public class MainWindow {
                 openDesigner(s, sch == null ? "" : sch, null);
             }
         });
+        MenuItem importItem = new MenuItem("Importar planilha ou CSV…");
+        importItem.setOnAction(e -> {
+            DbSession s = sessionForAnyDb();
+            if (s != null) {
+                importFile(s, null);
+            }
+        });
         MenuItem convertTo = new MenuItem("Converter para outro banco…");
         convertTo.setOnAction(e -> {
             DbSession s = sessionForAnyDb();
@@ -305,7 +315,7 @@ public class MainWindow {
         });
         MenuItem sqlHistory = new MenuItem("Histórico de SQL…");
         sqlHistory.setOnAction(e -> showSqlHistory());
-        Menu tools = new Menu("Ferramentas", null, newTable, flywayItem, sqlHistory, new SeparatorMenuItem(), convertTo,
+        Menu tools = new Menu("Ferramentas", null, newTable, flywayItem, sqlHistory, new SeparatorMenuItem(), importItem, convertTo,
                 new SeparatorMenuItem(), backupNow, backupFolder, autoBackup,
                 new SeparatorMenuItem(), scriptItem, compactItem, convertItem,
                 new SeparatorMenuItem(), drivers);
@@ -436,7 +446,8 @@ public class MainWindow {
     private void setupDragAndDrop(Scene scene) {
         scene.setOnDragOver(e -> {
             if (e.getDragboard().hasFiles() && e.getDragboard().getFiles().stream()
-                    .anyMatch(f -> H2FileInspector.isH2File(f.toPath()) || isSqliteFile(f.toPath()))) {
+                    .anyMatch(f -> H2FileInspector.isH2File(f.toPath()) || isSqliteFile(f.toPath())
+                            || br.com.marianojunior.h2studio.core.ServerBackupService.isFirebirdBackup(f.toPath()))) {
                 e.acceptTransferModes(TransferMode.COPY);
             }
             e.consume();
@@ -445,7 +456,8 @@ public class MainWindow {
             boolean ok = false;
             if (e.getDragboard().hasFiles()) {
                 for (File f : e.getDragboard().getFiles()) {
-                    if (H2FileInspector.isH2File(f.toPath()) || isSqliteFile(f.toPath())) {
+                    if (H2FileInspector.isH2File(f.toPath()) || isSqliteFile(f.toPath())
+                            || br.com.marianojunior.h2studio.core.ServerBackupService.isFirebirdBackup(f.toPath())) {
                         openFile(f.toPath());
                         ok = true;
                     }
@@ -458,6 +470,10 @@ public class MainWindow {
 
     /** Abrir a partir de um arquivo (arrastar e soltar ou linha de comando). */
     public void openFile(Path file) {
+        if (br.com.marianojunior.h2studio.core.ServerBackupService.isFirebirdBackup(file)) {
+            restoreFbk(file); // .fbk não é banco: vira um .fdb primeiro
+            return;
+        }
         if (isSqliteFile(file)) {
             ConnectionConfig cfg = new ConnectionConfig();
             cfg.setType(br.com.marianojunior.h2studio.core.DbType.SQLITE);
@@ -745,6 +761,19 @@ public class MainWindow {
     }
 
     // =====================================================================
+    // Backup do Firebird (.fbk) → banco
+    // =====================================================================
+
+    /** Transforma um .fbk num .fdb (gbak) e abre o banco restaurado. */
+    public void restoreFbk(Path fbk) {
+        // primeiro as conexões abertas (têm a senha mesmo sem "lembrar senha"), depois as recentes
+        List<br.com.marianojunior.h2studio.core.ConnectionConfig> known = new ArrayList<>();
+        sessions.forEach(x -> known.add(x.config()));
+        known.addAll(store.recent());
+        new FbkRestoreDialog(stage, fbk, known).showAndWait().ifPresent(this::open);
+    }
+
+    // =====================================================================
     // Converter entre bancos (parte 7)
     // =====================================================================
 
@@ -947,14 +976,31 @@ public class MainWindow {
                 return;
             }
         }
-        new CsvImportDialog(stage, s, t).showAndWait().ifPresent(r -> {
-            setStatus(String.format("Importadas %,d linha(s) em %s.", r.inserted(), t.name()).replace(',', '.'), false);
-            for (Tab tab : tabs.getTabs()) {
-                if (tab instanceof TableTab tt && tt.session() == s && tt.table().equals(t)) {
-                    tt.refresh();
-                }
+        new ImportDialog(stage, s, t.schema(), t).showAndWait().ifPresent(r -> afterImport(s, r));
+    }
+
+    /** Importar planilha/CSV como tabela nova (ou numa existente, escolhida no diálogo). */
+    private void importFile(DbSession s, String schema) {
+        new ImportDialog(stage, s, schema, null).showAndWait().ifPresent(r -> afterImport(s, r));
+    }
+
+    private void afterImport(DbSession s, ImportDialog.Outcome r) {
+        setStatus(String.format("Importadas %,d linha(s) em %s.", r.inserted(), r.table()).replace(',', '.')
+                + (r.created().size() > 1 ? " Tabelas criadas: " + String.join(", ", r.created()) + "." : ""), false);
+        for (Tab tab : tabs.getTabs()) {
+            if (tab instanceof TableTab tt && tt.session() == s && tt.table().name().equals(r.table())) {
+                tt.refresh();
             }
-        });
+            if (tab instanceof SqlEditorTab q && q.session() == s && !r.created().isEmpty()) {
+                q.reloadCatalog();
+            }
+        }
+        if (!r.created().isEmpty()) {
+            tree.load(s);
+            Fx.then(s.submit(c -> br.com.marianojunior.h2studio.core.MetadataService.tables(c, r.schema())), list ->
+                    list.stream().filter(t -> t.name().equals(r.table())).findFirst().ifPresent(t -> openTable(s, t)),
+                    e -> { });
+        }
     }
 
     private void dumpScript(DbSession s) {

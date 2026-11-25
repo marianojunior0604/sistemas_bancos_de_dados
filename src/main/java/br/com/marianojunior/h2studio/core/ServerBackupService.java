@@ -349,6 +349,57 @@ public final class ServerBackupService {
         check(NativeTools.run(cmd, fbEnv(cfg), null, null, p::line, p::cancelled), "gbak");
     }
 
+    /** É um backup do Firebird (gbak)? Pela extensão: .fbk (o comum) ou .gbk. */
+    public static boolean isFirebirdBackup(Path p) {
+        String n = p.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        return n.endsWith(".fbk") || n.endsWith(".gbk");
+    }
+
+    /**
+     * Restaura um .fbk num banco novo (.fdb), sem precisar de conexão aberta: o gbak manda o
+     * backup para o servidor, que cria o arquivo em {@code newDatabase} (caminho no computador do
+     * servidor). Backups do Firebird 2.5 restaurados num servidor 3, 4 ou 5 já saem no formato novo.
+     */
+    public static void restoreFirebirdBackup(ConnectionConfig server, Path fbk, String newDatabase, Progress p)
+            throws Exception {
+        try {
+            restoreFirebird(server, fbk, newDatabase, false, p);
+        } catch (MissingToolException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new IOException(friendlyGbak(e.getMessage(), server), e);
+        }
+    }
+
+    /** Explica os erros mais comuns do gbak; mantém a saída original no fim. */
+    static String friendlyGbak(String msg, ConnectionConfig server) {
+        String m = msg == null ? "" : msg.toLowerCase(java.util.Locale.ROOT);
+        String why;
+        if (m.contains("already exists") || m.contains("database file exists") || m.contains("cannot be created because it exists")) {
+            why = "Já existe um banco nesse caminho. Escolha outro nome para o .fdb (a restauração nunca substitui um banco).";
+        } else if (m.contains("user name and password are not defined") || m.contains("login") && m.contains("password")
+                || m.contains("335544472")) {
+            why = "Usuário ou senha do Firebird incorretos.";
+        } else if (m.contains("unable to complete network request") || m.contains("connection refused")
+                || m.contains("failed to establish") || m.contains("connection rejected")) {
+            why = "Não consegui falar com o servidor Firebird em " + server.getHost() + ":"
+                    + (server.getPort() > 0 ? server.getPort() : 3050) + ". Ele está instalado e rodando?";
+        } else if (m.contains("expected backup version") || m.contains("backup version") && m.contains("not supported")) {
+            why = "Este backup foi feito por um Firebird mais novo do que o gbak/servidor usados. Use um gbak e um "
+                    + "servidor da mesma versão do backup ou mais novos.";
+        } else if (m.contains("createfile") || m.contains("i/o error") || m.contains("permission denied")
+                || m.contains("no such file or directory") || m.contains("access is denied") || m.contains("acesso negado")) {
+            why = "O servidor Firebird não conseguiu criar o arquivo no caminho informado. Confira se a pasta existe "
+                    + "no computador do servidor e se o serviço do Firebird pode gravar nela.";
+        } else if (m.contains("expected backup description") || m.contains("expected data attribute") || m.contains("bad attribute") || m.contains("not a valid")
+                || m.contains("unexpected end of file") || m.contains("expected record") || m.contains("eof")) {
+            why = "O arquivo não parece ser um backup válido do Firebird (ou está incompleto/corrompido).";
+        } else {
+            return msg;
+        }
+        return why + "\n\nSaída do gbak:\n" + msg;
+    }
+
     private static void restoreSqlServer(DbSession s, String bakOnServer, String newDb, Progress p) throws Exception {
         s.runNow(c -> {
             boolean auto = c.getAutoCommit();

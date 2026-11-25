@@ -178,7 +178,7 @@ public final class ValueParser {
         return Double.valueOf(normalizeNumber(s));
     }
 
-    private static Boolean parseBoolean(String s) throws InvalidValueException {
+    static Boolean parseBoolean(String s) throws InvalidValueException {
         return switch (s.toLowerCase(Locale.ROOT)) {
             case "true", "t", "1", "sim", "s", "yes", "y", "verdadeiro", "v" -> Boolean.TRUE;
             case "false", "f", "0", "não", "nao", "n", "no", "falso" -> Boolean.FALSE;
@@ -188,7 +188,7 @@ public final class ValueParser {
 
     // ---------------------------------------------------------------- datas
 
-    private static LocalDate parseDate(String s) throws InvalidValueException {
+    static LocalDate parseDate(String s) throws InvalidValueException {
         String l = s.toLowerCase(Locale.ROOT);
         if (l.equals("hoje")) {
             return LocalDate.now();
@@ -203,7 +203,7 @@ public final class ValueParser {
         throw new InvalidValueException("\"" + s + "\" não é uma data válida. Use dd/mm/aaaa.");
     }
 
-    private static LocalTime parseTime(String s) throws InvalidValueException {
+    static LocalTime parseTime(String s) throws InvalidValueException {
         if (s.equalsIgnoreCase("agora")) {
             return LocalTime.now().withNano(0);
         }
@@ -214,7 +214,7 @@ public final class ValueParser {
         }
     }
 
-    private static LocalDateTime parseDateTime(String s) throws InvalidValueException {
+    static LocalDateTime parseDateTime(String s) throws InvalidValueException {
         String l = s.toLowerCase(Locale.ROOT);
         if (l.equals("agora")) {
             return LocalDateTime.now().withNano(0);

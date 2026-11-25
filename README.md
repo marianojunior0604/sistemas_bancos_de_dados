@@ -444,6 +444,55 @@ estrangeiras. Assim a ordem das tabelas não importa e a carga é rápida.
   de cada banco). As views aparecem nos avisos para você recriar no destino.
 - O banco de origem nunca é alterado.
 
+## Backup do Firebird (.fbk) → banco (.fdb) (versão 1.10)
+
+**Arquivo › Restaurar backup do Firebird (.fbk)…**, ou arraste o `.fbk` para a janela, ou dois cliques
+/ "Abrir com › H2 Studio" no Windows. Não precisa de conexão aberta.
+
+1. Escolha o `.fbk` (ou `.gbk`).
+2. Servidor Firebird: normalmente o deste computador (`localhost`, porta 3050, SYSDBA). A lista
+   *Usar* traz os servidores das conexões abertas e recentes, já com usuário e senha.
+3. Banco novo: o `.fdb` é sugerido ao lado do `.fbk`. É um caminho **no computador do servidor**:
+   com o Firebird nesta máquina é uma pasta daqui, e o serviço do Firebird precisa poder gravar nela.
+4. **Restaurar**: o `gbak` monta o banco e o programa já abre na árvore.
+
+- Precisa do `gbak` (vem com o Firebird; o programa procura nas pastas padrão ou em *Ferramentas do banco*).
+- Backup do **Firebird 2.5** restaurado num servidor **3, 4 ou 5** já sai no formato novo: é o jeito
+  mais simples de atualizar o banco antigo de um cliente.
+- Nunca substitui um banco existente: se o `.fdb` já existir, peça outro nome.
+- Erros comuns explicados: senha errada, servidor desligado, pasta sem permissão, arquivo que não é
+  backup e backup de versão mais nova que o servidor.
+
+## Importar CSV ou planilha (versão 1.9)
+
+Funciona em **todos os bancos** (H2, PostgreSQL, MySQL/MariaDB, Firebird, SQL Server, SQLite).
+Entradas: **Ferramentas › Importar planilha ou CSV…**, **Importar planilha ou CSV…** no menu da
+conexão/schema, **Importar CSV ou planilha…** no menu da tabela e o botão **Importar…** na grade.
+
+- **Arquivos:** `.xlsx` (Excel 2007+, LibreOffice, Google Planilhas) e `.csv`/`.txt` (UTF-8 ou
+  Windows-1252, separador `;`, `,` ou TAB, detectados sozinhos). O `.xls` antigo (Excel 97–2003)
+  não é lido: abra e salve como .xlsx. Na planilha você escolhe a aba; abas ocultas ficam de fora e
+  fórmulas entram com o valor calculado.
+- **Tabela nova:** o programa olha os dados e sugere nome e tipo de cada coluna, no dialeto do banco
+  ("Data de Nascimento" → `data_de_nascimento DATE`, "Limite de Crédito" → `NUMERIC(15, 2)`,
+  verdadeiro/falso → `BOOLEAN`, texto → `VARCHAR` do tamanho dos dados). Números com **zero à
+  esquerda** (CPF, CEP, códigos) ficam como texto. Dá para desmarcar colunas, renomear e trocar o
+  tipo; por padrão cria uma coluna `id` com auto incremento.
+- **Tabela existente:** liga as colunas pelo nome (sem ligar para maiúsculas, acentos e espaços) e
+  **adiciona** ou **substitui** as linhas.
+- **Todas as abas de uma vez:** "Importar todas as abas…" cria uma tabela por aba (tipos
+  automáticos); abas vazias são puladas e uma aba com problema não impede as outras.
+- **Formatos brasileiros:** datas reais do Excel e texto como `24/11/2026` ou `2026-11-24`;
+  números como `1.234,56`, `29,9` e `R$ 19,90`; sim/não.
+- **Nada pela metade:** todas as linhas são conferidas antes (tipo, tamanho, obrigatório) e a
+  gravação é numa transação só. Se o banco recusar uma linha (ex.: ID repetido), nada é gravado e
+  aparece qual linha do arquivo foi recusada. Na tabela nova, se a importação falhar, a tabela
+  criada é apagada.
+- **IDs vindos do arquivo:** depois de importar, o próximo número do auto incremento passa do maior
+  ID (PostgreSQL, H2 e Firebird 3+; MySQL, SQL Server e SQLite fazem isso sozinhos; no SQL Server
+  usa `IDENTITY_INSERT`). No Firebird com generator + gatilho o generator precisa ser ajustado à mão.
+- No H2, com o backup automático ligado, é feito um backup antes de importar.
+
 ## Como rodar
 
 ### NetBeans
@@ -461,7 +510,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 O script localiza sozinho o JDK 21 e o Maven do NetBeans quando o `mvn` não está no PATH.
 
-## Instalador (versão 1.8)
+## Instalador
 
 Pré-requisito, uma vez só: **Inno Setup 6.3 ou mais novo** (grátis) —
 `winget install JRSoftware.InnoSetup`. Depois, `.\empacotar.ps1` gera tudo:

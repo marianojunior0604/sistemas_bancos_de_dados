@@ -46,7 +46,7 @@ public class WelcomePane extends VBox {
         HBox buttons = new HBox(10, open, connect);
         buttons.setAlignment(Pos.CENTER);
 
-        VBox drop = new VBox(8, Icons.databaseLarge(), new Label("Arraste um arquivo .mv.db, .h2.db ou SQLite para esta janela"));
+        VBox drop = new VBox(8, Icons.databaseLarge(), new Label("Arraste para cá um banco .mv.db, .h2.db, SQLite ou um backup .fbk"));
         drop.setAlignment(Pos.CENTER);
         drop.getStyleClass().add("drop-zone");
         drop.setMaxWidth(560);

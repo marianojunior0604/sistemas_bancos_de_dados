@@ -856,6 +856,30 @@ public final class DbConverter {
         m.targetKind = tk;
     }
 
+    /** Tipo de destino escolhido para um tipo comum (usado pela importação de planilhas). */
+    public record TypeChoice(String type, Integer length, Integer scale, String display) {
+    }
+
+    /** Traduz um tipo comum (com tamanho/escala) para o tipo do banco de destino. */
+    public static TypeChoice targetType(Kind k, Integer length, Integer scale, DbType to) {
+        Column c = new Column();
+        c.name = "x";
+        c.type = switch (k) {
+            case CHAR -> "CHAR";
+            case VARCHAR -> "VARCHAR";
+            case TEXT -> "TEXT";
+            case DECIMAL -> "DECIMAL";
+            default -> k.name();
+        };
+        c.length = length;
+        c.scale = scale;
+        ColumnMap m = new ColumnMap("x", "x", "", k);
+        Column x = new Column();
+        x.name = "x";
+        mapType(c, k, m, x, DbType.H2, to, false, new ArrayList<>());
+        return new TypeChoice(x.type, x.length, x.scale, m.targetType);
+    }
+
     private static String textType(DbType to) {
         return switch (to) {
             case H2 -> "CLOB";
